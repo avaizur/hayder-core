@@ -1,8 +1,41 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Hayder Core - project memory and continue API
+Description: Hayder Core - secure memory, chat and future voice-ready API
 
 Resources:
+
+  HayderUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: hayder-users
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+
+  HayderUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: hayder-client
+      UserPoolId: !Ref HayderUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  HayderApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Auth:
+        DefaultAuthorizer: HayderJwtAuthorizer
+        Authorizers:
+          HayderJwtAuthorizer:
+            IdentitySource: "$request.header.Authorization"
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${HayderUserPool}"
+              audience:
+                - !Ref HayderUserPoolClient
+
   HayderMemoryTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -24,11 +57,15 @@ Resources:
       CodeUri: src/
       Handler: app.lambda_handler
       Runtime: python3.13
-      MemorySize: 256
-      Timeout: 10
+      MemorySize: 512
+      Timeout: 30
+
       Environment:
         Variables:
           HAYDER_TABLE: !Ref HayderMemoryTable
+          OPENAI_SECRET_NAME: hayder/openai-api-key
+          OPENAI_MODEL: gpt-5.6-luna
+
       Policies:
         - Statement:
             - Effect: Allow
@@ -36,27 +73,58 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
               Resource: !GetAtt HayderMemoryTable.Arn
+
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:hayder/openai-api-key-*"
+
       Events:
+
         Health:
           Type: HttpApi
           Properties:
+            ApiId: !Ref HayderApi
             Path: /health
             Method: GET
+            Auth:
+              Authorizer: NONE
+
         SaveProjectMemory:
           Type: HttpApi
           Properties:
+            ApiId: !Ref HayderApi
             Path: /memory/project
             Method: POST
+
         ContinueProject:
           Type: HttpApi
           Properties:
+            ApiId: !Ref HayderApi
             Path: /continue/{project}
             Method: GET
 
+        Chat:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /chat
+            Method: POST
+
 Outputs:
+
   HayderApiUrl:
     Description: Hayder Core HTTP API URL
-    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Value: !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com"
+
   HayderTableName:
     Description: DynamoDB memory table
     Value: !Ref HayderMemoryTable
+
+  HayderUserPoolId:
+    Description: Hayder Cognito User Pool ID
+    Value: !Ref HayderUserPool
+
+  HayderUserPoolClientId:
+    Description: Hayder Cognito App Client ID
+    Value: !Ref HayderUserPoolClient
