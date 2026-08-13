@@ -1,0 +1,21 @@
+{
+  "user_id": "avais",
+  "project": "xorwia",
+  "status": "in_progress",
+  "summary": "Paid-access implementation and business platform work",
+  "completed": [
+    "Stripe live payment flow",
+    "DynamoDB paid access records"
+  ],
+  "outstanding": [
+    "CapCut credit consumption",
+    "Frontend counters",
+    "Final webhook validation"
+  ],
+  "next_action": "Implement and test /api/access/consume for CapCut credits",
+  "decisions": [
+    "Production-changing actions require explicit approval"
+  ],
+  "people": [],
+  "links": []
+}
