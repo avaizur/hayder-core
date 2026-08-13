@@ -1,17 +1,29 @@
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
+import time
 import uuid
 import urllib.error
 import urllib.request
+
 from datetime import datetime, timezone
-from urllib.parse import unquote
+from urllib.parse import (
+    parse_qs,
+    quote,
+    unquote,
+    urlencode,
+)
 
 import boto3
 
 
 TABLE_NAME = os.environ["HAYDER_TABLE"]
 APPROVAL_TABLE_NAME = os.environ["HAYDER_APPROVAL_TABLE"]
+
+HAYDER_FUNCTION_NAME = os.environ["AWS_LAMBDA_FUNCTION_NAME"]
 
 OPENAI_SECRET_NAME = os.environ.get(
     "OPENAI_SECRET_NAME",
@@ -23,75 +35,227 @@ OPENAI_MODEL = os.environ.get(
     "gpt-5.6-luna",
 )
 
-table = boto3.resource("dynamodb").Table(TABLE_NAME)
-approval_table = boto3.resource("dynamodb").Table(APPROVAL_TABLE_NAME)
+GOOGLE_CLIENT_ID_SECRET = os.environ.get(
+    "GOOGLE_CLIENT_ID_SECRET",
+    "hayder/google/client-id",
+)
 
-secrets_client = boto3.client("secretsmanager")
+GOOGLE_CLIENT_SECRET_SECRET = os.environ.get(
+    "GOOGLE_CLIENT_SECRET_SECRET",
+    "hayder/google/client-secret",
+)
 
-_openai_api_key = None
+GOOGLE_SCOPE = (
+    "https://www.googleapis.com/auth/gmail.readonly"
+)
+
+GOOGLE_AUTH_URL = (
+    "https://accounts.google.com/o/oauth2/v2/auth"
+)
+
+GOOGLE_TOKEN_URL = (
+    "https://oauth2.googleapis.com/token"
+)
+
+GMAIL_BASE_URL = (
+    "https://gmail.googleapis.com/gmail/v1"
+)
 
 
-def response(status_code, body):
+dynamodb = boto3.resource("dynamodb")
+
+table = dynamodb.Table(TABLE_NAME)
+
+approval_table = dynamodb.Table(
+    APPROVAL_TABLE_NAME
+)
+
+secrets_client = boto3.client(
+    "secretsmanager"
+)
+
+lambda_client = boto3.client(
+    "lambda"
+)
+
+
+_secret_cache = {}
+
+
+# ------------------------------------------------
+# BASIC HELPERS
+# ------------------------------------------------
+
+def response(
+    status_code,
+    body,
+    headers=None,
+):
+    final_headers = {
+        "content-type": "application/json",
+    }
+
+    if headers:
+        final_headers.update(headers)
+
     return {
         "statusCode": status_code,
-        "headers": {
-            "content-type": "application/json",
-        },
-        "body": json.dumps(body, default=str),
+        "headers": final_headers,
+        "body": (
+            body
+            if isinstance(body, str)
+            else json.dumps(
+                body,
+                default=str,
+            )
+        ),
     }
 
 
 def now_iso():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
 
 
 def normalise_project_name(name):
-    return name.strip().lower().replace(" ", "-")
+    return (
+        name.strip()
+        .lower()
+        .replace(" ", "-")
+    )
 
 
 def get_body(event):
+
     raw = event.get("body") or "{}"
 
     if event.get("isBase64Encoded"):
-        import base64
-        raw = base64.b64decode(raw).decode("utf-8")
+
+        raw = base64.b64decode(
+            raw
+        ).decode("utf-8")
 
     return json.loads(raw)
 
 
 def get_authenticated_user(event):
+
     claims = (
-        event.get("requestContext", {})
-        .get("authorizer", {})
-        .get("jwt", {})
-        .get("claims", {})
+        event.get(
+            "requestContext",
+            {},
+        )
+        .get(
+            "authorizer",
+            {},
+        )
+        .get(
+            "jwt",
+            {},
+        )
+        .get(
+            "claims",
+            {},
+        )
     )
 
-    return claims.get("email") or claims.get("sub")
+    return (
+        claims.get("email")
+        or claims.get("sub")
+    )
+
+
+def get_secret(secret_name):
+
+    if secret_name in _secret_cache:
+        return _secret_cache[
+            secret_name
+        ]
+
+    result = (
+        secrets_client
+        .get_secret_value(
+            SecretId=secret_name
+        )
+    )
+
+    value = result.get(
+        "SecretString"
+    )
+
+    if not value:
+        raise RuntimeError(
+            f"Secret {secret_name} is empty"
+        )
+
+    _secret_cache[
+        secret_name
+    ] = value.strip()
+
+    return value.strip()
 
 
 def get_openai_api_key():
-    global _openai_api_key
 
-    if _openai_api_key:
-        return _openai_api_key
-
-    result = secrets_client.get_secret_value(
-        SecretId=OPENAI_SECRET_NAME
+    return get_secret(
+        OPENAI_SECRET_NAME
     )
 
-    secret = result.get("SecretString")
 
-    if not secret:
+def get_google_credentials():
+
+    client_id = get_secret(
+        GOOGLE_CLIENT_ID_SECRET
+    )
+
+    client_secret = get_secret(
+        GOOGLE_CLIENT_SECRET_SECRET
+    )
+
+    return (
+        client_id,
+        client_secret,
+    )
+
+
+def get_api_origin(event):
+
+    domain = (
+        event.get(
+            "requestContext",
+            {}
+        )
+        .get(
+            "domainName"
+        )
+    )
+
+    if not domain:
         raise RuntimeError(
-            "OpenAI API key was not found in Secrets Manager"
+            "API domain not found"
         )
 
-    _openai_api_key = secret.strip()
-    return _openai_api_key
+    return f"https://{domain}"
 
 
-def save_checkpoint(payload, user_id):
+def google_redirect_uri(event):
+
+    return (
+        get_api_origin(event)
+        + "/oauth/google/callback"
+    )
+
+
+# ------------------------------------------------
+# PROJECT MEMORY
+# ------------------------------------------------
+
+def save_checkpoint(
+    payload,
+    user_id,
+):
+
     required = [
         "project",
         "status",
@@ -100,18 +264,19 @@ def save_checkpoint(payload, user_id):
     ]
 
     missing = [
-        field for field in required
+        field
+        for field in required
         if not payload.get(field)
     ]
 
     if missing:
+
         return response(
             400,
             {
-                "error": (
-                    "Missing required fields: "
-                    + ", ".join(missing)
-                )
+                "error":
+                "Missing required fields: "
+                + ", ".join(missing)
             },
         )
 
@@ -123,81 +288,1082 @@ def save_checkpoint(payload, user_id):
 
     item = {
         "user_id": user_id,
-        "record_key": f"PROJECT#{project}",
+        "record_key":
+            f"PROJECT#{project}",
         "project": project,
         "status": payload["status"],
         "summary": payload["summary"],
-        "completed": payload.get("completed", []),
-        "outstanding": payload.get("outstanding", []),
-        "next_action": payload["next_action"],
-        "decisions": payload.get("decisions", []),
-        "people": payload.get("people", []),
-        "links": payload.get("links", []),
+        "completed":
+            payload.get(
+                "completed",
+                [],
+            ),
+        "outstanding":
+            payload.get(
+                "outstanding",
+                [],
+            ),
+        "next_action":
+            payload["next_action"],
+        "decisions":
+            payload.get(
+                "decisions",
+                [],
+            ),
+        "people":
+            payload.get(
+                "people",
+                [],
+            ),
+        "links":
+            payload.get(
+                "links",
+                [],
+            ),
         "updated_at": timestamp,
     }
 
     history_item = {
         **item,
-        "record_key": f"HISTORY#{project}#{timestamp}",
+        "record_key":
+            f"HISTORY#{project}#{timestamp}",
     }
 
-    table.put_item(Item=item)
-    table.put_item(Item=history_item)
+    table.put_item(
+        Item=item
+    )
+
+    table.put_item(
+        Item=history_item
+    )
 
     return response(
         201,
         {
-            "message": "Checkpoint saved",
+            "message":
+                "Checkpoint saved",
             "project": project,
-            "updated_at": timestamp,
-            "next_action": item["next_action"],
+            "updated_at":
+                timestamp,
+            "next_action":
+                item["next_action"],
         },
     )
 
 
-def get_project_record(user_id, project):
-    project = normalise_project_name(project)
+def get_project_record(
+    user_id,
+    project,
+):
+
+    project = normalise_project_name(
+        project
+    )
 
     result = table.get_item(
         Key={
             "user_id": user_id,
-            "record_key": f"PROJECT#{project}",
+            "record_key":
+                f"PROJECT#{project}",
         }
     )
 
     return result.get("Item")
 
 
-def continue_project(user_id, project):
-    project = normalise_project_name(project)
+def continue_project(
+    user_id,
+    project,
+):
 
-    item = get_project_record(user_id, project)
+    project = normalise_project_name(
+        project
+    )
+
+    item = get_project_record(
+        user_id,
+        project,
+    )
 
     if not item:
+
         return response(
             404,
             {
-                "error": (
-                    f"No checkpoint found for project '{project}'"
-                )
+                "error":
+                    "No checkpoint found "
+                    f"for project '{project}'"
             },
         )
 
     return response(
         200,
         {
-            "project": item["project"],
-            "status": item["status"],
-            "summary": item["summary"],
-            "completed": item.get("completed", []),
-            "outstanding": item.get("outstanding", []),
-            "next_action": item["next_action"],
-            "decisions": item.get("decisions", []),
-            "people": item.get("people", []),
-            "updated_at": item["updated_at"],
+            "project":
+                item["project"],
+            "status":
+                item["status"],
+            "summary":
+                item["summary"],
+            "completed":
+                item.get(
+                    "completed",
+                    [],
+                ),
+            "outstanding":
+                item.get(
+                    "outstanding",
+                    [],
+                ),
+            "next_action":
+                item[
+                    "next_action"
+                ],
+            "decisions":
+                item.get(
+                    "decisions",
+                    [],
+                ),
+            "people":
+                item.get(
+                    "people",
+                    [],
+                ),
+            "updated_at":
+                item[
+                    "updated_at"
+                ],
         },
     )
 
+
+# ------------------------------------------------
+# AWS READ-ONLY TOOL
+# ------------------------------------------------
+
+def get_hayder_lambda_status():
+
+    result = (
+        lambda_client
+        .get_function_configuration(
+            FunctionName=
+                HAYDER_FUNCTION_NAME
+        )
+    )
+
+    return {
+        "function":
+            result.get(
+                "FunctionName"
+            ),
+        "runtime":
+            result.get(
+                "Runtime"
+            ),
+        "memory_mb":
+            result.get(
+                "MemorySize"
+            ),
+        "timeout_seconds":
+            result.get(
+                "Timeout"
+            ),
+        "state":
+            result.get(
+                "State"
+            ),
+        "last_modified":
+            result.get(
+                "LastModified"
+            ),
+        "version":
+            result.get(
+                "Version"
+            ),
+    }
+
+
+def detect_aws_read_request(
+    message
+):
+
+    text = message.lower()
+
+    phrases = [
+        "check your lambda",
+        "check hayder lambda",
+        "check lambda status",
+        "what is your lambda status",
+        "show your lambda status",
+        "check your aws",
+    ]
+
+    return any(
+        phrase in text
+        for phrase in phrases
+    )
+
+
+# ------------------------------------------------
+# GOOGLE OAUTH
+# ------------------------------------------------
+
+def b64url_encode(data):
+
+    return (
+        base64.urlsafe_b64encode(
+            data
+        )
+        .decode("utf-8")
+        .rstrip("=")
+    )
+
+
+def b64url_decode(text):
+
+    padding = (
+        "="
+        * (-len(text) % 4)
+    )
+
+    return base64.urlsafe_b64decode(
+        text + padding
+    )
+
+
+def create_google_state(
+    user_id
+):
+
+    _, client_secret = (
+        get_google_credentials()
+    )
+
+    payload = {
+        "u": user_id,
+        "t": int(time.time()),
+        "n": uuid.uuid4().hex,
+    }
+
+    payload_bytes = json.dumps(
+        payload,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    encoded = b64url_encode(
+        payload_bytes
+    )
+
+    signature = hmac.new(
+        client_secret.encode(
+            "utf-8"
+        ),
+        encoded.encode(
+            "utf-8"
+        ),
+        hashlib.sha256,
+    ).digest()
+
+    return (
+        encoded
+        + "."
+        + b64url_encode(
+            signature
+        )
+    )
+
+
+def verify_google_state(
+    state
+):
+
+    try:
+
+        encoded, signature = (
+            state.split(".", 1)
+        )
+
+        _, client_secret = (
+            get_google_credentials()
+        )
+
+        expected = hmac.new(
+            client_secret.encode(
+                "utf-8"
+            ),
+            encoded.encode(
+                "utf-8"
+            ),
+            hashlib.sha256,
+        ).digest()
+
+        received = (
+            b64url_decode(
+                signature
+            )
+        )
+
+        if not hmac.compare_digest(
+            expected,
+            received,
+        ):
+            return None
+
+        payload = json.loads(
+            b64url_decode(
+                encoded
+            ).decode("utf-8")
+        )
+
+        timestamp = int(
+            payload.get("t", 0)
+        )
+
+        if (
+            int(time.time())
+            - timestamp
+            > 600
+        ):
+            return None
+
+        return payload.get("u")
+
+    except Exception:
+
+        return None
+
+
+def google_connect(
+    event,
+    user_id,
+):
+
+    client_id, _ = (
+        get_google_credentials()
+    )
+
+    redirect_uri = (
+        google_redirect_uri(
+            event
+        )
+    )
+
+    state = create_google_state(
+        user_id
+    )
+
+    params = {
+        "client_id":
+            client_id,
+        "redirect_uri":
+            redirect_uri,
+        "response_type":
+            "code",
+        "scope":
+            GOOGLE_SCOPE,
+        "access_type":
+            "offline",
+        "include_granted_scopes":
+            "true",
+        "prompt":
+            "consent",
+        "state":
+            state,
+    }
+
+    authorization_url = (
+        GOOGLE_AUTH_URL
+        + "?"
+        + urlencode(params)
+    )
+
+    return response(
+        200,
+        {
+            "assistant":
+                "Hayder",
+            "authorization_url":
+                authorization_url,
+            "scope":
+                "gmail.readonly",
+            "message":
+                "Open authorization_url "
+                "in your browser to connect Gmail."
+        },
+    )
+
+
+def post_form(
+    url,
+    payload,
+):
+
+    body = urlencode(
+        payload
+    ).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type":
+                "application/x-www-form-urlencoded"
+        },
+        method="POST",
+    )
+
+    try:
+
+        with urllib.request.urlopen(
+            req,
+            timeout=20,
+        ) as api_response:
+
+            return json.loads(
+                api_response
+                .read()
+                .decode("utf-8")
+            )
+
+    except urllib.error.HTTPError as exc:
+
+        error_body = (
+            exc.read()
+            .decode(
+                "utf-8",
+                errors="replace",
+            )
+        )
+
+        print(
+            "[GOOGLE HTTP ERROR]",
+            exc.code,
+            error_body,
+        )
+
+        raise RuntimeError(
+            f"Google returned HTTP "
+            f"{exc.code}"
+        )
+
+
+def google_api_get(
+    url,
+    access_token,
+):
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization":
+                "Bearer "
+                + access_token
+        },
+        method="GET",
+    )
+
+    try:
+
+        with urllib.request.urlopen(
+            req,
+            timeout=20,
+        ) as api_response:
+
+            return json.loads(
+                api_response
+                .read()
+                .decode("utf-8")
+            )
+
+    except urllib.error.HTTPError as exc:
+
+        error_body = (
+            exc.read()
+            .decode(
+                "utf-8",
+                errors="replace",
+            )
+        )
+
+        print(
+            "[GMAIL HTTP ERROR]",
+            exc.code,
+            error_body,
+        )
+
+        raise RuntimeError(
+            f"Gmail returned HTTP "
+            f"{exc.code}"
+        )
+
+
+def google_user_secret_name(
+    user_id
+):
+
+    digest = hashlib.sha256(
+        user_id.encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+    return (
+        "hayder/google/users/"
+        + digest
+        + "/gmail"
+    )
+
+
+def store_google_refresh_token(
+    user_id,
+    refresh_token,
+    gmail_email,
+):
+
+    secret_name = (
+        google_user_secret_name(
+            user_id
+        )
+    )
+
+    secret_value = json.dumps(
+        {
+            "refresh_token":
+                refresh_token,
+            "gmail_email":
+                gmail_email,
+            "scope":
+                GOOGLE_SCOPE,
+            "connected_at":
+                now_iso(),
+        }
+    )
+
+    try:
+
+        secrets_client.create_secret(
+            Name=secret_name,
+            SecretString=
+                secret_value,
+            Description=(
+                "Hayder Gmail OAuth "
+                "refresh token"
+            ),
+        )
+
+    except (
+        secrets_client
+        .exceptions
+        .ResourceExistsException
+    ):
+
+        secrets_client.put_secret_value(
+            SecretId=
+                secret_name,
+            SecretString=
+                secret_value,
+        )
+
+
+def google_callback(
+    event
+):
+
+    query = (
+        event.get(
+            "queryStringParameters"
+        )
+        or {}
+    )
+
+    if query.get("error"):
+
+        return response(
+            400,
+            {
+                "error":
+                    query.get(
+                        "error"
+                    )
+            },
+        )
+
+    code = query.get("code")
+    state = query.get("state")
+
+    if not code or not state:
+
+        return response(
+            400,
+            {
+                "error":
+                    "Missing OAuth code "
+                    "or state"
+            },
+        )
+
+    user_id = verify_google_state(
+        state
+    )
+
+    if not user_id:
+
+        return response(
+            400,
+            {
+                "error":
+                    "Invalid or expired "
+                    "OAuth state"
+            },
+        )
+
+    client_id, client_secret = (
+        get_google_credentials()
+    )
+
+    token_data = post_form(
+        GOOGLE_TOKEN_URL,
+        {
+            "code":
+                code,
+            "client_id":
+                client_id,
+            "client_secret":
+                client_secret,
+            "redirect_uri":
+                google_redirect_uri(
+                    event
+                ),
+            "grant_type":
+                "authorization_code",
+        },
+    )
+
+    access_token = (
+        token_data.get(
+            "access_token"
+        )
+    )
+
+    refresh_token = (
+        token_data.get(
+            "refresh_token"
+        )
+    )
+
+    if not access_token:
+
+        return response(
+            502,
+            {
+                "error":
+                    "Google did not "
+                    "return an access token"
+            },
+        )
+
+    if not refresh_token:
+
+        return response(
+            400,
+            {
+                "error":
+                    "Google did not return "
+                    "a refresh token. "
+                    "Reconnect and approve "
+                    "consent again."
+            },
+        )
+
+    profile = google_api_get(
+        GMAIL_BASE_URL
+        + "/users/me/profile",
+        access_token,
+    )
+
+    gmail_email = (
+        profile.get(
+            "emailAddress"
+        )
+        or "unknown"
+    )
+
+    store_google_refresh_token(
+        user_id,
+        refresh_token,
+        gmail_email,
+    )
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hayder Gmail Connected</title>
+</head>
+
+<body style="
+font-family:Arial;
+max-width:700px;
+margin:60px auto;
+padding:20px;
+">
+
+<h1>✅ Gmail connected to Hayder</h1>
+
+<p>
+Connected Gmail account:
+<strong>{gmail_email}</strong>
+</p>
+
+<p>
+Permission:
+<strong>Read only</strong>
+</p>
+
+<p>
+Hayder cannot send or delete email
+with this Gmail permission.
+</p>
+
+<p>
+You can now return to Hayder Voice
+and say:
+</p>
+
+<h2>
+“Hayder, read my latest 5 emails.”
+</h2>
+
+<a href="/voice">
+Return to Hayder Voice
+</a>
+
+</body>
+</html>
+"""
+
+    return response(
+        200,
+        html,
+        headers={
+            "content-type":
+                "text/html; charset=utf-8"
+        },
+    )
+
+
+def load_google_connection(
+    user_id
+):
+
+    secret_name = (
+        google_user_secret_name(
+            user_id
+        )
+    )
+
+    try:
+
+        result = (
+            secrets_client
+            .get_secret_value(
+                SecretId=
+                    secret_name
+            )
+        )
+
+    except (
+        secrets_client
+        .exceptions
+        .ResourceNotFoundException
+    ):
+
+        return None
+
+    secret_string = (
+        result.get(
+            "SecretString"
+        )
+    )
+
+    if not secret_string:
+        return None
+
+    return json.loads(
+        secret_string
+    )
+
+
+def refresh_google_access_token(
+    user_id
+):
+
+    connection = (
+        load_google_connection(
+            user_id
+        )
+    )
+
+    if not connection:
+
+        raise RuntimeError(
+            "GMAIL_NOT_CONNECTED"
+        )
+
+    refresh_token = (
+        connection.get(
+            "refresh_token"
+        )
+    )
+
+    if not refresh_token:
+
+        raise RuntimeError(
+            "GMAIL_NOT_CONNECTED"
+        )
+
+    client_id, client_secret = (
+        get_google_credentials()
+    )
+
+    data = post_form(
+        GOOGLE_TOKEN_URL,
+        {
+            "client_id":
+                client_id,
+            "client_secret":
+                client_secret,
+            "refresh_token":
+                refresh_token,
+            "grant_type":
+                "refresh_token",
+        },
+    )
+
+    access_token = (
+        data.get(
+            "access_token"
+        )
+    )
+
+    if not access_token:
+
+        raise RuntimeError(
+            "GOOGLE_REFRESH_FAILED"
+        )
+
+    return (
+        access_token,
+        connection,
+    )
+
+
+# ------------------------------------------------
+# GMAIL READ-ONLY TOOL
+# ------------------------------------------------
+
+def detect_gmail_read_request(
+    message
+):
+
+    text = message.lower()
+
+    phrases = [
+        "read my latest email",
+        "read my latest emails",
+        "read latest email",
+        "read latest emails",
+        "check my email",
+        "check my emails",
+        "latest 5 emails",
+        "latest five emails",
+        "recent emails",
+    ]
+
+    return any(
+        phrase in text
+        for phrase in phrases
+    )
+
+
+def gmail_latest_messages(
+    user_id,
+    max_results=5,
+):
+
+    access_token, connection = (
+        refresh_google_access_token(
+            user_id
+        )
+    )
+
+    params = urlencode(
+        {
+            "maxResults":
+                max_results,
+            "q":
+                "in:inbox",
+        }
+    )
+
+    listing = google_api_get(
+        GMAIL_BASE_URL
+        + "/users/me/messages?"
+        + params,
+        access_token,
+    )
+
+    messages = []
+
+    for item in listing.get(
+        "messages",
+        [],
+    ):
+
+        message_id = item["id"]
+
+        query = urlencode(
+            [
+                (
+                    "format",
+                    "metadata",
+                ),
+                (
+                    "metadataHeaders",
+                    "From",
+                ),
+                (
+                    "metadataHeaders",
+                    "Subject",
+                ),
+                (
+                    "metadataHeaders",
+                    "Date",
+                ),
+            ]
+        )
+
+        msg = google_api_get(
+            GMAIL_BASE_URL
+            + "/users/me/messages/"
+            + quote(
+                message_id
+            )
+            + "?"
+            + query,
+            access_token,
+        )
+
+        headers = {}
+
+        for header in (
+            msg.get(
+                "payload",
+                {}
+            ).get(
+                "headers",
+                []
+            )
+        ):
+
+            headers[
+                header.get(
+                    "name",
+                    ""
+                ).lower()
+            ] = header.get(
+                "value",
+                ""
+            )
+
+        messages.append(
+            {
+                "id":
+                    message_id,
+                "from":
+                    headers.get(
+                        "from",
+                        ""
+                    ),
+                "subject":
+                    headers.get(
+                        "subject",
+                        "(no subject)",
+                    ),
+                "date":
+                    headers.get(
+                        "date",
+                        "",
+                    ),
+                "snippet":
+                    msg.get(
+                        "snippet",
+                        "",
+                    ),
+            }
+        )
+
+    return {
+        "gmail_account":
+            connection.get(
+                "gmail_email"
+            ),
+        "messages":
+            messages,
+    }
+
+
+def gmail_spoken_reply(
+    result
+):
+
+    messages = result.get(
+        "messages",
+        [],
+    )
+
+    if not messages:
+
+        return (
+            "I checked Gmail. "
+            "There are no messages "
+            "in your inbox."
+        )
+
+    parts = [
+        "I checked Gmail. "
+        f"Here are your latest "
+        f"{len(messages)} emails."
+    ]
+
+    for index, msg in enumerate(
+        messages,
+        start=1,
+    ):
+
+        sender = msg.get(
+            "from",
+            "unknown sender",
+        )
+
+        subject = msg.get(
+            "subject",
+            "no subject",
+        )
+
+        parts.append(
+            f"Email {index}. "
+            f"From {sender}. "
+            f"Subject: {subject}."
+        )
+
+    return " ".join(parts)
+
+
+# ------------------------------------------------
+# APPROVAL ENGINE
+# ------------------------------------------------
 
 def create_approval_record(
     user_id,
@@ -206,30 +1372,52 @@ def create_approval_record(
     summary,
     details=None,
 ):
-    approval_id = str(uuid.uuid4())
+
+    approval_id = str(
+        uuid.uuid4()
+    )
+
     timestamp = now_iso()
 
     item = {
-        "user_id": user_id,
-        "approval_id": approval_id,
-        "action_type": action_type,
-        "target": target,
-        "summary": summary,
-        "details": details or {},
-        "status": "WAITING_APPROVAL",
-        "created_at": timestamp,
-        "updated_at": timestamp,
-        "approved_at": None,
-        "rejected_at": None,
-        "executed_at": None,
+        "user_id":
+            user_id,
+        "approval_id":
+            approval_id,
+        "action_type":
+            action_type,
+        "target":
+            target,
+        "summary":
+            summary,
+        "details":
+            details or {},
+        "status":
+            "WAITING_APPROVAL",
+        "created_at":
+            timestamp,
+        "updated_at":
+            timestamp,
+        "approved_at":
+            None,
+        "rejected_at":
+            None,
+        "executed_at":
+            None,
     }
 
-    approval_table.put_item(Item=item)
+    approval_table.put_item(
+        Item=item
+    )
 
     return item
 
 
-def create_approval(user_id, payload):
+def create_approval(
+    user_id,
+    payload,
+):
+
     required = [
         "action_type",
         "target",
@@ -237,18 +1425,19 @@ def create_approval(user_id, payload):
     ]
 
     missing = [
-        field for field in required
+        field
+        for field in required
         if not payload.get(field)
     ]
 
     if missing:
+
         return response(
             400,
             {
-                "error": (
+                "error":
                     "Missing required fields: "
                     + ", ".join(missing)
-                )
             },
         )
 
@@ -261,34 +1450,65 @@ def create_approval(user_id, payload):
         "purchase",
     }
 
-    action_type = payload["action_type"]
+    action_type = (
+        payload[
+            "action_type"
+        ]
+    )
 
-    if action_type not in allowed_action_types:
+    if (
+        action_type
+        not in
+        allowed_action_types
+    ):
+
         return response(
             400,
             {
-                "error": "Unsupported action_type",
-                "allowed": sorted(allowed_action_types),
+                "error":
+                    "Unsupported action_type",
+                "allowed":
+                    sorted(
+                        allowed_action_types
+                    ),
             },
         )
 
     item = create_approval_record(
-        user_id=user_id,
-        action_type=action_type,
-        target=payload["target"],
-        summary=payload["summary"],
-        details=payload.get("details", {}),
+        user_id=
+            user_id,
+        action_type=
+            action_type,
+        target=
+            payload["target"],
+        summary=
+            payload["summary"],
+        details=
+            payload.get(
+                "details",
+                {},
+            ),
     )
 
     return response(
         201,
         {
-            "message": "Approval request created",
-            "approval_id": item["approval_id"],
-            "status": item["status"],
-            "action_type": item["action_type"],
-            "target": item["target"],
-            "summary": item["summary"],
+            "message":
+                "Approval request created",
+            "approval_id":
+                item[
+                    "approval_id"
+                ],
+            "status":
+                item["status"],
+            "action_type":
+                item[
+                    "action_type"
+                ],
+            "target":
+                item["target"],
+            "summary":
+                item["summary"],
         },
     )
 
@@ -298,67 +1518,120 @@ def update_approval_status(
     approval_id,
     new_status,
 ):
+
     now = now_iso()
 
     timestamp_field = (
         "approved_at"
-        if new_status == "APPROVED"
+        if new_status
+        == "APPROVED"
         else "rejected_at"
     )
 
     try:
-        result = approval_table.update_item(
-            Key={
-                "user_id": user_id,
-                "approval_id": approval_id,
-            },
-            UpdateExpression=(
-                "SET #status = :new_status, "
-                "#updated_at = :now, "
-                f"#{timestamp_field} = :now"
-            ),
-            ConditionExpression=(
-                "attribute_exists(approval_id) "
-                "AND #status = :waiting"
-            ),
-            ExpressionAttributeNames={
-                "#status": "status",
-                "#updated_at": "updated_at",
-                f"#{timestamp_field}": timestamp_field,
-            },
-            ExpressionAttributeValues={
-                ":new_status": new_status,
-                ":waiting": "WAITING_APPROVAL",
-                ":now": now,
-            },
-            ReturnValues="ALL_NEW",
+
+        result = (
+            approval_table
+            .update_item(
+                Key={
+                    "user_id":
+                        user_id,
+                    "approval_id":
+                        approval_id,
+                },
+                UpdateExpression=(
+                    "SET #status = :new_status, "
+                    "#updated_at = :now, "
+                    f"#{timestamp_field} = :now"
+                ),
+                ConditionExpression=(
+                    "attribute_exists(approval_id) "
+                    "AND #status = :waiting"
+                ),
+                ExpressionAttributeNames={
+                    "#status":
+                        "status",
+                    "#updated_at":
+                        "updated_at",
+                    f"#{timestamp_field}":
+                        timestamp_field,
+                },
+                ExpressionAttributeValues={
+                    ":new_status":
+                        new_status,
+                    ":waiting":
+                        "WAITING_APPROVAL",
+                    ":now":
+                        now,
+                },
+                ReturnValues=
+                    "ALL_NEW",
+            )
         )
 
-    except approval_table.meta.client.exceptions.ConditionalCheckFailedException:
-        existing = approval_table.get_item(
-            Key={
-                "user_id": user_id,
-                "approval_id": approval_id,
-            }
-        ).get("Item")
+    except (
+        approval_table
+        .meta
+        .client
+        .exceptions
+        .ConditionalCheckFailedException
+    ):
+
+        existing = (
+            approval_table
+            .get_item(
+                Key={
+                    "user_id":
+                        user_id,
+                    "approval_id":
+                        approval_id,
+                }
+            )
+            .get("Item")
+        )
 
         if not existing:
-            return None, "NOT_FOUND"
 
-        return existing, "ALREADY_CHANGED"
+            return (
+                None,
+                "NOT_FOUND",
+            )
 
-    return result["Attributes"], None
+        return (
+            existing,
+            "ALREADY_CHANGED",
+        )
+
+    return (
+        result[
+            "Attributes"
+        ],
+        None,
+    )
 
 
-def detect_project(message):
-    text = message.strip().lower()
+# ------------------------------------------------
+# PROJECT DETECTION
+# ------------------------------------------------
+
+def detect_project(
+    message
+):
+
+    text = (
+        message.strip()
+        .lower()
+    )
 
     known_projects = [
         "xorwia",
         "hayder",
     ]
 
-    for project in known_projects:
+    for project in (
+        known_projects
+    ):
+
         if project in text:
             return project
 
@@ -369,6 +1642,7 @@ def detect_project(message):
     ]
 
     for pattern in patterns:
+
         match = re.search(
             pattern,
             text,
@@ -376,18 +1650,31 @@ def detect_project(message):
         )
 
         if match:
-            return normalise_project_name(
-                match.group(1)
+
+            return (
+                normalise_project_name(
+                    match.group(1)
+                )
             )
 
     return None
 
 
-def build_project_context(user_id, message):
-    project = detect_project(message)
+def build_project_context(
+    user_id,
+    message,
+):
+
+    project = detect_project(
+        message
+    )
 
     if not project:
-        return None, ""
+
+        return (
+            None,
+            "",
+        )
 
     item = get_project_record(
         user_id,
@@ -395,33 +1682,82 @@ def build_project_context(user_id, message):
     )
 
     if not item:
-        return project, (
-            f"The user mentioned project '{project}', "
-            "but Hayder currently has no saved checkpoint for it."
+
+        return (
+            project,
+            (
+                "The user mentioned "
+                f"project '{project}', "
+                "but Hayder currently "
+                "has no saved checkpoint "
+                "for it."
+            ),
         )
 
     context = {
-        "project": item.get("project"),
-        "status": item.get("status"),
-        "summary": item.get("summary"),
-        "completed": item.get("completed", []),
-        "outstanding": item.get("outstanding", []),
-        "next_action": item.get("next_action"),
-        "decisions": item.get("decisions", []),
-        "people": item.get("people", []),
-        "updated_at": item.get("updated_at"),
+        "project":
+            item.get(
+                "project"
+            ),
+        "status":
+            item.get(
+                "status"
+            ),
+        "summary":
+            item.get(
+                "summary"
+            ),
+        "completed":
+            item.get(
+                "completed",
+                [],
+            ),
+        "outstanding":
+            item.get(
+                "outstanding",
+                [],
+            ),
+        "next_action":
+            item.get(
+                "next_action"
+            ),
+        "decisions":
+            item.get(
+                "decisions",
+                [],
+            ),
+        "people":
+            item.get(
+                "people",
+                [],
+            ),
+        "updated_at":
+            item.get(
+                "updated_at"
+            ),
     }
 
-    return project, json.dumps(
-        context,
-        default=str,
+    return (
+        project,
+        json.dumps(
+            context,
+            default=str,
+        ),
     )
 
 
-def detect_sensitive_action(message):
+# ------------------------------------------------
+# SENSITIVE ACTION DETECTION
+# ------------------------------------------------
+
+def detect_sensitive_action(
+    message
+):
+
     text = message.lower()
 
     rules = [
+
         (
             "deployment",
             [
@@ -431,6 +1767,7 @@ def detect_sensitive_action(message):
                 "promote to ",
             ],
         ),
+
         (
             "email_send",
             [
@@ -441,6 +1778,7 @@ def detect_sensitive_action(message):
                 "send the message",
             ],
         ),
+
         (
             "delete",
             [
@@ -449,6 +1787,7 @@ def detect_sensitive_action(message):
                 "destroy ",
             ],
         ),
+
         (
             "purchase",
             [
@@ -457,6 +1796,7 @@ def detect_sensitive_action(message):
                 "pay for ",
             ],
         ),
+
         (
             "aws_change",
             [
@@ -468,6 +1808,7 @@ def detect_sensitive_action(message):
                 "terminate instance",
             ],
         ),
+
         (
             "git_change",
             [
@@ -479,23 +1820,38 @@ def detect_sensitive_action(message):
         ),
     ]
 
-    for action_type, phrases in rules:
-        for phrase in phrases:
-            if phrase in text:
-                project = detect_project(message)
+    for (
+        action_type,
+        phrases,
+    ) in rules:
 
-                target = project or "unspecified"
+        for phrase in phrases:
+
+            if phrase in text:
+
+                project = (
+                    detect_project(
+                        message
+                    )
+                )
 
                 return {
-                    "action_type": action_type,
-                    "target": target,
-                    "summary": message.strip(),
+                    "action_type":
+                        action_type,
+                    "target":
+                        project
+                        or "unspecified",
+                    "summary":
+                        message.strip(),
                 }
 
     return None
 
 
-def detect_approval_command(message):
+def detect_approval_command(
+    message
+):
+
     text = message.strip()
 
     approve_match = re.match(
@@ -505,6 +1861,7 @@ def detect_approval_command(message):
     )
 
     if approve_match:
+
         return (
             "APPROVED",
             approve_match.group(1),
@@ -517,6 +1874,7 @@ def detect_approval_command(message):
     )
 
     if reject_match:
+
         return (
             "REJECTED",
             reject_match.group(1),
@@ -525,33 +1883,72 @@ def detect_approval_command(message):
     return None
 
 
-def extract_openai_text(data):
-    output_text = data.get("output_text")
+# ------------------------------------------------
+# OPENAI
+# ------------------------------------------------
+
+def extract_openai_text(
+    data
+):
+
+    output_text = (
+        data.get(
+            "output_text"
+        )
+    )
 
     if output_text:
         return output_text
 
     text_parts = []
 
-    for item in data.get("output", []):
-        if item.get("type") != "message":
+    for item in (
+        data.get(
+            "output",
+            [],
+        )
+    ):
+
+        if (
+            item.get("type")
+            != "message"
+        ):
             continue
 
-        for content in item.get("content", []):
-            if content.get("type") == "output_text":
-                text = content.get("text")
+        for content in (
+            item.get(
+                "content",
+                [],
+            )
+        ):
+
+            if (
+                content.get("type")
+                == "output_text"
+            ):
+
+                text = content.get(
+                    "text"
+                )
 
                 if text:
-                    text_parts.append(text)
+                    text_parts.append(
+                        text
+                    )
 
-    return "\n".join(text_parts).strip()
+    return "\n".join(
+        text_parts
+    ).strip()
 
 
 def call_openai(
     user_message,
     project_context="",
 ):
-    api_key = get_openai_api_key()
+
+    api_key = (
+        get_openai_api_key()
+    )
 
     instructions = """
 You are Hayder, a secure personal AI operations assistant.
@@ -562,60 +1959,82 @@ technical work and day-to-day operations.
 Rules:
 
 1. Use saved Hayder memory when supplied.
-2. Never claim an external action happened unless an executor
-   actually performed it.
-3. Deployments, sending messages, purchases, deletions,
-   security changes, AWS write changes and Git write changes
-   require explicit approval.
-4. Approval does not mean execution. It only grants permission
-   for a future executor.
-5. Be concise, practical and action-oriented.
-6. Your name is Hayder.
+2. Never claim an external action happened unless an executor actually performed it.
+3. Deployments, sending messages, purchases, deletions, security changes,
+   AWS write changes and Git write changes require explicit approval.
+4. Approval does not mean execution.
+5. Read-only checks do not need approval.
+6. Gmail access is read-only unless a future separately-approved capability exists.
+7. Be concise, practical and action-oriented.
+8. Your name is Hayder.
 """
 
     if project_context:
+
         input_text = (
-            f"USER MESSAGE:\n{user_message}\n\n"
+            "USER MESSAGE:\n"
+            + user_message
+            + "\n\n"
             "SAVED HAYDER PROJECT MEMORY:\n"
-            f"{project_context}"
+            + project_context
         )
+
     else:
+
         input_text = (
-            f"USER MESSAGE:\n{user_message}"
+            "USER MESSAGE:\n"
+            + user_message
         )
 
     payload = {
-        "model": OPENAI_MODEL,
-        "instructions": instructions,
-        "input": input_text,
+        "model":
+            OPENAI_MODEL,
+        "instructions":
+            instructions,
+        "input":
+            input_text,
         "reasoning": {
-            "effort": "low"
+            "effort":
+                "low"
         },
     }
 
     request = urllib.request.Request(
         "https://api.openai.com/v1/responses",
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps(
+            payload
+        ).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
+            "Authorization":
+                "Bearer "
+                + api_key,
+            "Content-Type":
+                "application/json",
         },
         method="POST",
     )
 
     try:
+
         with urllib.request.urlopen(
             request,
             timeout=25,
         ) as api_response:
-            raw = api_response.read().decode(
-                "utf-8"
+
+            raw = (
+                api_response
+                .read()
+                .decode("utf-8")
             )
 
     except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode(
-            "utf-8",
-            errors="replace",
+
+        error_body = (
+            exc.read()
+            .decode(
+                "utf-8",
+                errors="replace",
+            )
         )
 
         print(
@@ -625,154 +2044,366 @@ Rules:
         )
 
         raise RuntimeError(
-            f"OpenAI returned HTTP {exc.code}"
+            "OpenAI returned HTTP "
+            + str(exc.code)
         )
 
     except urllib.error.URLError as exc:
+
         print(
             "[OPENAI CONNECTION ERROR]",
             str(exc),
         )
 
         raise RuntimeError(
-            "Unable to connect to OpenAI"
+            "Unable to connect "
+            "to OpenAI"
         )
 
     data = json.loads(raw)
 
-    text = extract_openai_text(data)
+    text = extract_openai_text(
+        data
+    )
 
     if not text:
+
         raise RuntimeError(
-            "OpenAI returned no text response"
+            "OpenAI returned "
+            "no text response"
         )
 
     return text
 
 
-def chat(user_id, payload):
-    message = payload.get("message")
+# ------------------------------------------------
+# CHAT
+# ------------------------------------------------
+
+def chat(
+    user_id,
+    payload,
+):
+
+    message = payload.get(
+        "message"
+    )
 
     if not message:
+
         return response(
             400,
-            {"error": "message is required"},
+            {
+                "error":
+                    "message is required"
+            },
         )
 
-    approval_command = detect_approval_command(
+    # AWS READ ONLY
+
+    if detect_aws_read_request(
         message
+    ):
+
+        try:
+
+            status = (
+                get_hayder_lambda_status()
+            )
+
+            reply = (
+                "My AWS Lambda is "
+                f"{status.get('state')}. "
+                "It is running "
+                f"{status.get('runtime')}, "
+                "with "
+                f"{status.get('memory_mb')} "
+                "MB memory and a "
+                f"{status.get('timeout_seconds')} "
+                "second timeout. "
+                "Last modified: "
+                f"{status.get('last_modified')}."
+            )
+
+            return response(
+                200,
+                {
+                    "assistant":
+                        "Hayder",
+                    "tool":
+                        "aws_lambda_readonly",
+                    "aws":
+                        status,
+                    "reply":
+                        reply,
+                },
+            )
+
+        except Exception as exc:
+
+            print(
+                "[AWS READ ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "error":
+                        "Hayder could not "
+                        "read its AWS Lambda "
+                        "configuration"
+                },
+            )
+
+    # GMAIL READ ONLY
+
+    if detect_gmail_read_request(
+        message
+    ):
+
+        try:
+
+            gmail_result = (
+                gmail_latest_messages(
+                    user_id,
+                    5,
+                )
+            )
+
+            return response(
+                200,
+                {
+                    "assistant":
+                        "Hayder",
+                    "tool":
+                        "gmail_readonly",
+                    "gmail":
+                        gmail_result,
+                    "reply":
+                        gmail_spoken_reply(
+                            gmail_result
+                        ),
+                },
+            )
+
+        except RuntimeError as exc:
+
+            if (
+                str(exc)
+                == "GMAIL_NOT_CONNECTED"
+            ):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "gmail_connected":
+                            False,
+                        "reply":
+                            "Gmail is not connected "
+                            "to this Hayder account yet."
+                    },
+                )
+
+            print(
+                "[GMAIL READ ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not read Gmail."
+                },
+            )
+
+        except Exception as exc:
+
+            print(
+                "[GMAIL READ ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not read Gmail."
+                },
+            )
+
+    # APPROVAL COMMAND
+
+    approval_command = (
+        detect_approval_command(
+            message
+        )
     )
 
     if approval_command:
-        new_status, approval_id = (
-            approval_command
-        )
 
-        item, error = update_approval_status(
-            user_id,
-            approval_id,
+        (
             new_status,
+            approval_id,
+        ) = approval_command
+
+        item, error = (
+            update_approval_status(
+                user_id,
+                approval_id,
+                new_status,
+            )
         )
 
         if error == "NOT_FOUND":
+
             return response(
                 404,
                 {
-                    "assistant": "Hayder",
-                    "reply": (
-                        "I could not find that approval request."
-                    ),
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not find "
+                        "that approval request."
                 },
             )
 
         if error == "ALREADY_CHANGED":
+
             return response(
                 409,
                 {
-                    "assistant": "Hayder",
-                    "approval_id": approval_id,
-                    "status": item.get("status"),
-                    "reply": (
-                        "That approval request has already "
-                        f"been {item.get('status')}."
-                    ),
+                    "assistant":
+                        "Hayder",
+                    "approval_id":
+                        approval_id,
+                    "status":
+                        item.get(
+                            "status"
+                        ),
+                    "reply":
+                        "That approval request "
+                        "has already been "
+                        f"{item.get('status')}."
                 },
             )
 
         return response(
             200,
             {
-                "assistant": "Hayder",
-                "approval_id": approval_id,
-                "status": item["status"],
-                "reply": (
-                    f"Approval {approval_id} is now "
+                "assistant":
+                    "Hayder",
+                "approval_id":
+                    approval_id,
+                "status":
+                    item["status"],
+                "reply":
+                    "Approval "
+                    f"{approval_id} "
+                    "is now "
                     f"{item['status']}. "
-                    "No external action has been executed yet."
-                ),
+                    "No external action "
+                    "has been executed yet."
             },
         )
 
-    sensitive_action = detect_sensitive_action(
-        message
+    # SENSITIVE ACTION
+
+    sensitive_action = (
+        detect_sensitive_action(
+            message
+        )
     )
 
     if sensitive_action:
-        item = create_approval_record(
-            user_id=user_id,
-            action_type=sensitive_action[
-                "action_type"
-            ],
-            target=sensitive_action[
-                "target"
-            ],
-            summary=sensitive_action[
-                "summary"
-            ],
-            details={
-                "source": "chat",
-                "original_message": message,
-            },
+
+        item = (
+            create_approval_record(
+                user_id=
+                    user_id,
+                action_type=
+                    sensitive_action[
+                        "action_type"
+                    ],
+                target=
+                    sensitive_action[
+                        "target"
+                    ],
+                summary=
+                    sensitive_action[
+                        "summary"
+                    ],
+                details={
+                    "source":
+                        "chat",
+                    "original_message":
+                        message,
+                },
+            )
         )
 
         return response(
             200,
             {
-                "assistant": "Hayder",
-                "approval_required": True,
-                "approval_id": item[
-                    "approval_id"
-                ],
-                "status": item["status"],
-                "action_type": item[
-                    "action_type"
-                ],
-                "target": item["target"],
-                "reply": (
-                    "This action requires your approval. "
+                "assistant":
+                    "Hayder",
+                "approval_required":
+                    True,
+                "approval_id":
+                    item[
+                        "approval_id"
+                    ],
+                "status":
+                    item[
+                        "status"
+                    ],
+                "action_type":
+                    item[
+                        "action_type"
+                    ],
+                "target":
+                    item[
+                        "target"
+                    ],
+                "reply":
+                    "This action requires "
+                    "your approval. "
                     "I created approval request "
                     f"{item['approval_id']}. "
-                    "No external action has been performed. "
+                    "No external action has "
+                    "been performed. "
                     "To approve it, say: "
-                    f"Approve {item['approval_id']}"
-                ),
+                    "Approve "
+                    f"{item['approval_id']}"
             },
         )
 
-    project, project_context = (
-        build_project_context(
-            user_id,
-            message,
-        )
+    # NORMAL AI CHAT
+
+    (
+        project,
+        project_context,
+    ) = build_project_context(
+        user_id,
+        message,
     )
 
     try:
+
         reply = call_openai(
             message,
             project_context,
         )
 
     except Exception as exc:
+
         print(
             "[HAYDER CHAT ERROR]",
             str(exc),
@@ -781,27 +2412,41 @@ def chat(user_id, payload):
         return response(
             502,
             {
-                "error": (
-                    "Hayder could not reach the AI service"
-                )
+                "error":
+                    "Hayder could not "
+                    "reach the AI service"
             },
         )
 
     return response(
         200,
         {
-            "assistant": "Hayder",
-            "model": OPENAI_MODEL,
-            "project": project,
-            "reply": reply,
+            "assistant":
+                "Hayder",
+            "model":
+                OPENAI_MODEL,
+            "project":
+                project,
+            "reply":
+                reply,
         },
     )
 
 
-def lambda_handler(event, context):
-    request_context = event.get(
-        "requestContext",
-        {},
+# ------------------------------------------------
+# MAIN LAMBDA HANDLER
+# ------------------------------------------------
+
+def lambda_handler(
+    event,
+    context,
+):
+
+    request_context = (
+        event.get(
+            "requestContext",
+            {},
+        )
     )
 
     http = request_context.get(
@@ -819,59 +2464,131 @@ def lambda_handler(event, context):
         "",
     )
 
-    path_parameters = event.get(
-        "pathParameters",
-        {},
-    ) or {}
+    path_parameters = (
+        event.get(
+            "pathParameters",
+            {},
+        )
+        or {}
+    )
+
+    # PUBLIC HEALTH
 
     if (
         method == "GET"
         and path == "/health"
     ):
+
         return response(
             200,
             {
-                "status": "ok",
-                "service": "hayder-core",
+                "status":
+                    "ok",
+                "service":
+                    "hayder-core",
             },
         )
 
-    user_id = get_authenticated_user(
-        event
+    # PUBLIC GOOGLE CALLBACK
+
+    if (
+        method == "GET"
+        and path
+        == "/oauth/google/callback"
+    ):
+
+        try:
+
+            return google_callback(
+                event
+            )
+
+        except Exception as exc:
+
+            print(
+                "[GOOGLE CALLBACK ERROR]",
+                str(exc),
+            )
+
+            return response(
+                500,
+                {
+                    "error":
+                        "Google connection failed"
+                },
+            )
+
+    # EVERYTHING BELOW REQUIRES COGNITO
+
+    user_id = (
+        get_authenticated_user(
+            event
+        )
     )
 
     if not user_id:
+
         return response(
             401,
             {
-                "error": (
-                    "Authenticated user not found"
-                )
+                "error":
+                    "Authenticated user "
+                    "not found"
             },
         )
 
+    # GOOGLE CONNECT
+
+    if (
+        method == "GET"
+        and path
+        == "/oauth/google/connect"
+    ):
+
+        return google_connect(
+            event,
+            user_id,
+        )
+
+    # PROJECT MEMORY
+
     if (
         method == "POST"
-        and path == "/memory/project"
+        and path
+        == "/memory/project"
     ):
+
         try:
+
             return save_checkpoint(
                 get_body(event),
                 user_id,
             )
 
         except json.JSONDecodeError:
+
             return response(
                 400,
-                {"error": "Invalid JSON body"},
+                {
+                    "error":
+                        "Invalid JSON body"
+                },
             )
+
+    # CONTINUE PROJECT
 
     if (
         method == "GET"
-        and path.startswith("/continue/")
+        and path.startswith(
+            "/continue/"
+        )
     ):
+
         project = unquote(
-            path.split("/continue/", 1)[1]
+            path.split(
+                "/continue/",
+                1,
+            )[1]
         )
 
         return continue_project(
@@ -879,113 +2596,173 @@ def lambda_handler(event, context):
             project,
         )
 
+    # CHAT
+
     if (
         method == "POST"
         and path == "/chat"
     ):
+
         try:
+
             return chat(
                 user_id,
                 get_body(event),
             )
 
         except json.JSONDecodeError:
+
             return response(
                 400,
-                {"error": "Invalid JSON body"},
+                {
+                    "error":
+                        "Invalid JSON body"
+                },
             )
+
+    # CREATE APPROVAL
 
     if (
         method == "POST"
-        and path == "/approval/create"
+        and path
+        == "/approval/create"
     ):
+
         try:
+
             return create_approval(
                 user_id,
                 get_body(event),
             )
 
         except json.JSONDecodeError:
+
             return response(
                 400,
-                {"error": "Invalid JSON body"},
+                {
+                    "error":
+                        "Invalid JSON body"
+                },
             )
+
+    # APPROVE
 
     if (
         method == "POST"
-        and path.endswith("/approve")
-        and "/approval/" in path
+        and path.endswith(
+            "/approve"
+        )
+        and "/approval/"
+        in path
     ):
-        approval_id = path_parameters.get(
-            "approval_id"
+
+        approval_id = (
+            path_parameters.get(
+                "approval_id"
+            )
         )
 
-        item, error = update_approval_status(
-            user_id,
-            approval_id,
-            "APPROVED",
+        item, error = (
+            update_approval_status(
+                user_id,
+                approval_id,
+                "APPROVED",
+            )
         )
 
         if error:
+
             return response(
-                409 if item else 404,
+                409
+                if item
+                else 404,
                 {
-                    "error": error,
-                    "current_status": (
-                        item.get("status")
-                        if item
-                        else None
-                    ),
+                    "error":
+                        error,
+                    "current_status":
+                        (
+                            item.get(
+                                "status"
+                            )
+                            if item
+                            else None
+                        ),
                 },
             )
 
         return response(
             200,
             {
-                "approval_id": approval_id,
-                "status": item["status"],
-                "summary": item["summary"],
+                "approval_id":
+                    approval_id,
+                "status":
+                    item["status"],
+                "summary":
+                    item["summary"],
             },
         )
 
+    # REJECT
+
     if (
         method == "POST"
-        and path.endswith("/reject")
-        and "/approval/" in path
+        and path.endswith(
+            "/reject"
+        )
+        and "/approval/"
+        in path
     ):
-        approval_id = path_parameters.get(
-            "approval_id"
+
+        approval_id = (
+            path_parameters.get(
+                "approval_id"
+            )
         )
 
-        item, error = update_approval_status(
-            user_id,
-            approval_id,
-            "REJECTED",
+        item, error = (
+            update_approval_status(
+                user_id,
+                approval_id,
+                "REJECTED",
+            )
         )
 
         if error:
+
             return response(
-                409 if item else 404,
+                409
+                if item
+                else 404,
                 {
-                    "error": error,
-                    "current_status": (
-                        item.get("status")
-                        if item
-                        else None
-                    ),
+                    "error":
+                        error,
+                    "current_status":
+                        (
+                            item.get(
+                                "status"
+                            )
+                            if item
+                            else None
+                        ),
                 },
             )
 
         return response(
             200,
             {
-                "approval_id": approval_id,
-                "status": item["status"],
-                "summary": item["summary"],
+                "approval_id":
+                    approval_id,
+                "status":
+                    item["status"],
+                "summary":
+                    item["summary"],
             },
         )
 
     return response(
         404,
-        {"error": "Route not found"},
+        {
+            "error":
+                "Route not found"
+        },
     )
