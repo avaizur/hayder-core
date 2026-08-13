@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Hayder Core - secure memory, chat and future voice-ready API
+Description: Hayder Core - secure memory, AI chat, approvals and future voice-ready API
 
 Resources:
 
@@ -51,6 +51,21 @@ Resources:
         - AttributeName: record_key
           KeyType: RANGE
 
+  HayderApprovalTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: approval_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: approval_id
+          KeyType: RANGE
+
   HayderCoreFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -63,16 +78,25 @@ Resources:
       Environment:
         Variables:
           HAYDER_TABLE: !Ref HayderMemoryTable
+          HAYDER_APPROVAL_TABLE: !Ref HayderApprovalTable
           OPENAI_SECRET_NAME: hayder/openai-api-key
           OPENAI_MODEL: gpt-5.6-luna
 
       Policies:
         - Statement:
+
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
               Resource: !GetAtt HayderMemoryTable.Arn
+
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt HayderApprovalTable.Arn
 
             - Effect: Allow
               Action:
@@ -111,6 +135,27 @@ Resources:
             Path: /chat
             Method: POST
 
+        CreateApproval:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /approval/create
+            Method: POST
+
+        ApproveAction:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /approval/{approval_id}/approve
+            Method: POST
+
+        RejectAction:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /approval/{approval_id}/reject
+            Method: POST
+
 Outputs:
 
   HayderApiUrl:
@@ -118,8 +163,12 @@ Outputs:
     Value: !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com"
 
   HayderTableName:
-    Description: DynamoDB memory table
+    Description: DynamoDB project memory table
     Value: !Ref HayderMemoryTable
+
+  HayderApprovalTableName:
+    Description: DynamoDB approval table
+    Value: !Ref HayderApprovalTable
 
   HayderUserPoolId:
     Description: Hayder Cognito User Pool ID
