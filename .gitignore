@@ -1,0 +1,6 @@
+.aws-sam/
+src/__pycache__/
+*.pyc
+*.backup*
+*.before-*
+samconfig.toml
