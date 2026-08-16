@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 
-Description: Hayder Core - AI, memory, approvals, AWS read-only, Gmail read-only and voice
+Description: Hayder Core - AI, memory, approvals, AWS read-only, Gmail read-only, authentication and voice
 
 Resources:
 
@@ -41,13 +41,11 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       BillingMode: PAY_PER_REQUEST
-
       AttributeDefinitions:
         - AttributeName: user_id
           AttributeType: S
         - AttributeName: record_key
           AttributeType: S
-
       KeySchema:
         - AttributeName: user_id
           KeyType: HASH
@@ -58,13 +56,11 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       BillingMode: PAY_PER_REQUEST
-
       AttributeDefinitions:
         - AttributeName: user_id
           AttributeType: S
         - AttributeName: approval_id
           AttributeType: S
-
       KeySchema:
         - AttributeName: user_id
           KeyType: HASH
@@ -74,7 +70,6 @@ Resources:
   HayderCoreFunction:
     Type: AWS::Serverless::Function
     Properties:
-
       CodeUri: src/
       Handler: app.lambda_handler
       Runtime: python3.13
@@ -83,24 +78,21 @@ Resources:
 
       Environment:
         Variables:
-
           HAYDER_TABLE: !Ref HayderMemoryTable
           HAYDER_APPROVAL_TABLE: !Ref HayderApprovalTable
-
           OPENAI_SECRET_NAME: hayder/openai-api-key
           OPENAI_MODEL: gpt-5.6-luna
-
           GOOGLE_CLIENT_ID_SECRET: hayder/google/client-id
           GOOGLE_CLIENT_SECRET_SECRET: hayder/google/client-secret
 
       Policies:
-
         - Statement:
 
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
+                - dynamodb:Query
               Resource: !GetAtt HayderMemoryTable.Arn
 
             - Effect: Allow
@@ -201,10 +193,42 @@ Resources:
             Path: /approval/{approval_id}/reject
             Method: POST
 
+  HayderAuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: auth.lambda_handler
+      Runtime: python3.13
+      MemorySize: 128
+      Timeout: 10
+
+      Environment:
+        Variables:
+          COGNITO_CLIENT_ID: !Ref HayderUserPoolClient
+
+      Events:
+
+        Login:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /auth/login
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+        Refresh:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /auth/refresh
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
   HayderVoiceFunction:
     Type: AWS::Serverless::Function
     Properties:
-
       CodeUri: src/
       Handler: voice.lambda_handler
       Runtime: python3.13

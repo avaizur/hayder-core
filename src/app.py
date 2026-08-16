@@ -19,6 +19,11 @@ from urllib.parse import (
 
 import boto3
 
+from intent import resolve_intent
+from attention import important_summary
+from calendar_tool import calendar_events, spoken_calendar_summary
+from attention_memory import configure, parse_preference_command, save_preference
+
 
 TABLE_NAME = os.environ["HAYDER_TABLE"]
 APPROVAL_TABLE_NAME = os.environ["HAYDER_APPROVAL_TABLE"]
@@ -46,7 +51,8 @@ GOOGLE_CLIENT_SECRET_SECRET = os.environ.get(
 )
 
 GOOGLE_SCOPE = (
-    "https://www.googleapis.com/auth/gmail.readonly"
+    "https://www.googleapis.com/auth/gmail.readonly "
+    "https://www.googleapis.com/auth/calendar.events.readonly"
 )
 
 GOOGLE_AUTH_URL = (
@@ -65,6 +71,8 @@ GMAIL_BASE_URL = (
 dynamodb = boto3.resource("dynamodb")
 
 table = dynamodb.Table(TABLE_NAME)
+
+configure(TABLE_NAME)
 
 approval_table = dynamodb.Table(
     APPROVAL_TABLE_NAME
@@ -1187,6 +1195,46 @@ def detect_gmail_read_request(
     )
 
 
+def detect_important_inbox_request(
+    message
+):
+
+    text = message.lower()
+
+    importance_words = [
+        "important",
+        "urgent",
+        "priority",
+        "worth my attention",
+        "need my attention",
+        "anything i should know",
+        "anything important",
+        "what needs attention",
+    ]
+
+    inbox_words = [
+        "email",
+        "emails",
+        "gmail",
+        "inbox",
+        "mail",
+        "messages",
+    ]
+
+    return (
+        any(
+            phrase in text
+            for phrase in importance_words
+        )
+        and
+        any(
+            word in text
+            for word in inbox_words
+        )
+    )
+
+
+
 def gmail_latest_messages(
     user_id,
     max_results=5,
@@ -2099,147 +2147,90 @@ def chat(
             },
         )
 
-    # AWS READ ONLY
+    # ------------------------------------------------
+    # PERSONAL ATTENTION LEARNING
+    # ------------------------------------------------
 
-    if detect_aws_read_request(
+    preference = parse_preference_command(
         message
-    ):
+    )
 
-        try:
+    if preference:
 
-            status = (
-                get_hayder_lambda_status()
+        saved_result = save_preference(
+            user_id=user_id,
+            pattern=preference[
+                "pattern"
+            ],
+            priority=preference[
+                "priority"
+            ],
+            source_phrase=message,
+        )
+
+        saved = saved_result[
+            "item"
+        ]
+
+        if saved_result[
+            "updated"
+        ]:
+
+            reply_text = (
+                "Updated. I changed "
+                + saved["pattern"]
+                + " from "
+                + str(
+                    saved_result[
+                        "previous_priority"
+                    ]
+                ).lower()
+                + " to "
+                + saved["priority"].lower()
+                + " priority."
             )
 
-            reply = (
-                "My AWS Lambda is "
-                f"{status.get('state')}. "
-                "It is running "
-                f"{status.get('runtime')}, "
-                "with "
-                f"{status.get('memory_mb')} "
-                "MB memory and a "
-                f"{status.get('timeout_seconds')} "
-                "second timeout. "
-                "Last modified: "
-                f"{status.get('last_modified')}."
+        else:
+
+            reply_text = (
+                "Understood. I will treat "
+                + saved["pattern"]
+                + " as "
+                + saved["priority"].lower()
+                + " priority when I review "
+                + "your inbox."
             )
 
-            return response(
-                200,
-                {
-                    "assistant":
-                        "Hayder",
-                    "tool":
-                        "aws_lambda_readonly",
-                    "aws":
-                        status,
-                    "reply":
-                        reply,
-                },
-            )
-
-        except Exception as exc:
-
-            print(
-                "[AWS READ ERROR]",
-                str(exc),
-            )
-
-            return response(
-                502,
-                {
-                    "error":
-                        "Hayder could not "
-                        "read its AWS Lambda "
-                        "configuration"
-                },
-            )
-
-    # GMAIL READ ONLY
-
-    if detect_gmail_read_request(
-        message
-    ):
-
-        try:
-
-            gmail_result = (
-                gmail_latest_messages(
-                    user_id,
-                    5,
-                )
-            )
-
-            return response(
-                200,
-                {
-                    "assistant":
-                        "Hayder",
-                    "tool":
-                        "gmail_readonly",
-                    "gmail":
-                        gmail_result,
-                    "reply":
-                        gmail_spoken_reply(
-                            gmail_result
-                        ),
-                },
-            )
-
-        except RuntimeError as exc:
-
-            if (
-                str(exc)
-                == "GMAIL_NOT_CONNECTED"
-            ):
-
-                return response(
-                    409,
+        return response(
+            200,
+            {
+                "assistant":
+                    "Hayder",
+                "tool":
+                    "attention_learning",
+                "preference":
                     {
-                        "assistant":
-                            "Hayder",
-                        "gmail_connected":
-                            False,
-                        "reply":
-                            "Gmail is not connected "
-                            "to this Hayder account yet."
+                        "pattern":
+                            saved[
+                                "pattern"
+                            ],
+                        "priority":
+                            saved[
+                                "priority"
+                            ],
+                        "updated":
+                            saved_result[
+                                "updated"
+                            ],
                     },
-                )
+                "reply":
+                    reply_text,
+            },
+        )
 
-            print(
-                "[GMAIL READ ERROR]",
-                str(exc),
-            )
-
-            return response(
-                502,
-                {
-                    "assistant":
-                        "Hayder",
-                    "reply":
-                        "I could not read Gmail."
-                },
-            )
-
-        except Exception as exc:
-
-            print(
-                "[GMAIL READ ERROR]",
-                str(exc),
-            )
-
-            return response(
-                502,
-                {
-                    "assistant":
-                        "Hayder",
-                    "reply":
-                        "I could not read Gmail."
-                },
-            )
-
-    # APPROVAL COMMAND
+    # ------------------------------------------------
+    # SAFETY FIRST: APPROVAL / WRITE ACTIONS
+    # ------------------------------------------------
 
     approval_command = (
         detect_approval_command(
@@ -2314,8 +2305,6 @@ def chat(
             },
         )
 
-    # SENSITIVE ACTION
-
     sensitive_action = (
         detect_sensitive_action(
             message
@@ -2385,7 +2374,471 @@ def chat(
             },
         )
 
-    # NORMAL AI CHAT
+    # ------------------------------------------------
+    # INTENT + LEARNING LAYER
+    # ------------------------------------------------
+
+    try:
+
+        resolved = resolve_intent(
+            user_id,
+            message,
+        )
+
+    except Exception as exc:
+
+        print(
+            "[INTENT RESOLUTION ERROR]",
+            str(exc),
+        )
+
+        resolved = {
+            "intent":
+                "general_chat",
+            "confidence":
+                0,
+            "source":
+                "error_fallback",
+        }
+
+    intent = resolved.get(
+        "intent"
+    )
+
+    # ------------------------------------------------
+    # IMPORTANT INBOX / ATTENTION ENGINE
+    # ------------------------------------------------
+
+    if (
+        intent == "gmail_readonly"
+        and detect_important_inbox_request(
+            message
+        )
+    ):
+
+        try:
+
+            gmail_result = (
+                gmail_latest_messages(
+                    user_id,
+                    10,
+                )
+            )
+
+            attention_result = (
+                important_summary(
+                    gmail_result.get(
+                        "messages",
+                        [],
+                    ),
+                    limit=5,
+                    user_id=user_id,
+                )
+            )
+
+            return response(
+                200,
+                {
+                    "assistant":
+                        "Hayder",
+                    "tool":
+                        "attention_engine",
+                    "intent":
+                        resolved,
+                    "gmail_account":
+                        gmail_result.get(
+                            "gmail_account"
+                        ),
+                    "important_messages":
+                        attention_result.get(
+                            "messages",
+                            [],
+                        ),
+                    "reply":
+                        attention_result.get(
+                            "reply"
+                        ),
+                },
+            )
+
+        except RuntimeError as exc:
+
+            if (
+                str(exc)
+                == "GMAIL_NOT_CONNECTED"
+            ):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "gmail_connected":
+                            False,
+                        "intent":
+                            resolved,
+                        "reply":
+                            "Gmail is not connected "
+                            "to this Hayder account yet."
+                    },
+                )
+
+            print(
+                "[ATTENTION ENGINE ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not analyse "
+                        "your important emails."
+                },
+            )
+
+        except Exception as exc:
+
+            print(
+                "[ATTENTION ENGINE ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not analyse "
+                        "your important emails."
+                },
+            )
+
+    # ------------------------------------------------
+    # CALENDAR READ ONLY
+    # ------------------------------------------------
+
+    if intent == "calendar_readonly":
+
+        try:
+
+            day = (
+                "tomorrow"
+                if "tomorrow" in message.lower()
+                else "today"
+            )
+
+            access_token, _ = (
+                refresh_google_access_token(
+                    user_id
+                )
+            )
+
+            events = calendar_events(
+                access_token,
+                day=day,
+                max_results=10,
+            )
+
+            return response(
+                200,
+                {
+                    "assistant":
+                        "Hayder",
+                    "tool":
+                        "calendar_readonly",
+                    "intent":
+                        resolved,
+                    "day":
+                        day,
+                    "events":
+                        events,
+                    "reply":
+                        spoken_calendar_summary(
+                            events,
+                            day,
+                        ),
+                },
+            )
+
+        except RuntimeError as exc:
+
+            if str(exc) == "GMAIL_NOT_CONNECTED":
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "reply":
+                            "Your Google account is not connected yet."
+                    },
+                )
+
+            print(
+                "[CALENDAR ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not read your calendar."
+                },
+            )
+
+        except Exception as exc:
+
+            print(
+                "[CALENDAR ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not read your calendar."
+                },
+            )
+
+    # ------------------------------------------------
+    # GMAIL READ ONLY
+    # ------------------------------------------------
+
+    if intent == "gmail_readonly":
+
+        try:
+
+            gmail_result = (
+                gmail_latest_messages(
+                    user_id,
+                    5,
+                )
+            )
+
+            return response(
+                200,
+                {
+                    "assistant":
+                        "Hayder",
+                    "tool":
+                        "gmail_readonly",
+                    "intent":
+                        resolved,
+                    "gmail":
+                        gmail_result,
+                    "reply":
+                        gmail_spoken_reply(
+                            gmail_result
+                        ),
+                },
+            )
+
+        except RuntimeError as exc:
+
+            if (
+                str(exc)
+                == "GMAIL_NOT_CONNECTED"
+            ):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "gmail_connected":
+                            False,
+                        "intent":
+                            resolved,
+                        "reply":
+                            "Gmail is not connected "
+                            "to this Hayder account yet."
+                    },
+                )
+
+            print(
+                "[GMAIL READ ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not read Gmail."
+                },
+            )
+
+        except Exception as exc:
+
+            print(
+                "[GMAIL READ ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "assistant":
+                        "Hayder",
+                    "reply":
+                        "I could not read Gmail."
+                },
+            )
+
+    # ------------------------------------------------
+    # AWS READ ONLY
+    # ------------------------------------------------
+
+    if intent == "aws_readonly":
+
+        try:
+
+            status = (
+                get_hayder_lambda_status()
+            )
+
+            reply = (
+                "My AWS Lambda is "
+                f"{status.get('state')}. "
+                "It is running "
+                f"{status.get('runtime')}, "
+                "with "
+                f"{status.get('memory_mb')} "
+                "MB memory and a "
+                f"{status.get('timeout_seconds')} "
+                "second timeout. "
+                "Last modified: "
+                f"{status.get('last_modified')}."
+            )
+
+            return response(
+                200,
+                {
+                    "assistant":
+                        "Hayder",
+                    "tool":
+                        "aws_lambda_readonly",
+                    "intent":
+                        resolved,
+                    "aws":
+                        status,
+                    "reply":
+                        reply,
+                },
+            )
+
+        except Exception as exc:
+
+            print(
+                "[AWS READ ERROR]",
+                str(exc),
+            )
+
+            return response(
+                502,
+                {
+                    "error":
+                        "Hayder could not "
+                        "read its AWS Lambda "
+                        "configuration"
+                },
+            )
+
+    # ------------------------------------------------
+    # PROJECT CONTINUATION
+    # ------------------------------------------------
+
+    if intent == "project_continue":
+
+        project = detect_project(
+            message
+        )
+
+        if project:
+
+            item = get_project_record(
+                user_id,
+                project,
+            )
+
+            if item:
+
+                completed = item.get(
+                    "completed",
+                    [],
+                )
+
+                outstanding = item.get(
+                    "outstanding",
+                    [],
+                )
+
+                next_action = item.get(
+                    "next_action",
+                    "",
+                )
+
+                reply = (
+                    f"Continuing {project}. "
+                    f"{item.get('summary', '')} "
+                )
+
+                if completed:
+                    reply += (
+                        "Completed: "
+                        + ", ".join(
+                            completed
+                        )
+                        + ". "
+                    )
+
+                if outstanding:
+                    reply += (
+                        "Outstanding: "
+                        + ", ".join(
+                            outstanding
+                        )
+                        + ". "
+                    )
+
+                if next_action:
+                    reply += (
+                        "Next action: "
+                        + next_action
+                        + "."
+                    )
+
+                return response(
+                    200,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "tool":
+                            "project_memory",
+                        "intent":
+                            resolved,
+                        "project":
+                            project,
+                        "reply":
+                            reply,
+                    },
+                )
+
+    # ------------------------------------------------
+    # NORMAL AI CHAT FALLBACK
+    # ------------------------------------------------
 
     (
         project,
@@ -2425,6 +2878,8 @@ def chat(
                 "Hayder",
             "model":
                 OPENAI_MODEL,
+            "intent":
+                resolved,
             "project":
                 project,
             "reply":
