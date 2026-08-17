@@ -208,6 +208,12 @@ Send command
 </button>
 
 <button
+    id="googleButton"
+    class="secondary">
+🔗 Connect Google Gmail + Calendar
+</button>
+
+<button
     id="logoutButton"
     class="danger">
 Sign out
@@ -236,6 +242,9 @@ const assistantCard =
 
 const loginButton =
     document.getElementById("loginButton");
+
+const googleButton =
+    document.getElementById("googleButton");
 
 const logoutButton =
     document.getElementById("logoutButton");
@@ -759,6 +768,59 @@ passwordBox.addEventListener(
         ) {
 
             login();
+        }
+    }
+);
+
+
+googleButton.addEventListener(
+    "click",
+    async function() {
+
+        statusBox.textContent =
+            "Preparing Google connection...";
+
+        try {
+
+            const token =
+                await getValidIdToken();
+
+            const response =
+                await fetch(
+                    "/oauth/google/connect",
+                    {
+                        method: "GET",
+                        headers: {
+                            "Authorization":
+                                "Bearer " + token
+                        }
+                    }
+                );
+
+            const data =
+                await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.error
+                    || data.message
+                    || "Google connection failed."
+                );
+            }
+
+            if (!data.authorization_url) {
+                throw new Error(
+                    "Google authorization URL was not returned."
+                );
+            }
+
+            window.location.href =
+                data.authorization_url;
+
+        } catch (error) {
+
+            statusBox.textContent =
+                error.message;
         }
     }
 );

@@ -197,6 +197,44 @@ def event_time_text(value):
         return value
 
 
+def event_minutes_from_now(value):
+    """Return minutes until a calendar event.
+
+    Negative means the event has already started/passed.
+    Returns None for all-day or invalid values.
+    """
+
+    if not value or "T" not in value:
+        return None
+
+    try:
+        dt = datetime.fromisoformat(
+            value.replace(
+                "Z",
+                "+00:00",
+            )
+        )
+
+        dt = dt.astimezone(
+            USER_TIMEZONE
+        )
+
+        now = datetime.now(
+            USER_TIMEZONE
+        )
+
+        seconds = (
+            dt - now
+        ).total_seconds()
+
+        return int(
+            seconds // 60
+        )
+
+    except Exception:
+        return None
+
+
 def spoken_calendar_summary(
     events,
     day="today",

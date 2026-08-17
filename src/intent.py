@@ -37,6 +37,7 @@ ALLOWED_READ_INTENTS = {
     "aws_readonly",
     "project_continue",
     "calendar_readonly",
+    "daily_briefing",
     "general_chat",
 }
 
@@ -318,6 +319,70 @@ def heuristic_intent(message):
                 "aws_readonly",
             "confidence":
                 0.92,
+            "source":
+                "heuristic",
+        }
+
+    # Unified daily attention briefing
+
+    briefing_phrases = [
+        "what needs my attention today",
+        "what needs attention today",
+        "what needs my attention",
+        "what needs attention",
+        "whats needed by attention today",
+        "what's needed by attention today",
+        "what should i focus on today",
+        "what should i do today",
+        "brief me for today",
+        "brief me today",
+        "daily briefing",
+        "give me my briefing",
+        "what matters today",
+        "what is important today",
+        "anything important today",
+    ]
+
+    briefing_words = [
+        "attention",
+        "focus",
+        "briefing",
+        "important",
+        "matters",
+        "priority",
+        "priorities",
+    ]
+
+    today_words = [
+        "today",
+        "now",
+        "this morning",
+        "this afternoon",
+        "this evening",
+    ]
+
+    if (
+        any(
+            phrase in text
+            for phrase in briefing_phrases
+        )
+        or (
+            any(
+                word in text
+                for word in briefing_words
+            )
+            and
+            any(
+                word in text
+                for word in today_words
+            )
+        )
+    ):
+        return {
+            "intent":
+                "daily_briefing",
+            "confidence":
+                0.96,
             "source":
                 "heuristic",
         }

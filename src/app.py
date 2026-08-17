@@ -21,7 +21,12 @@ import boto3
 
 from intent import resolve_intent
 from attention import important_summary
-from calendar_tool import calendar_events, spoken_calendar_summary
+from calendar_tool import (
+    calendar_events,
+    spoken_calendar_summary,
+    event_time_text,
+    event_minutes_from_now,
+)
 from attention_memory import configure, parse_preference_command, save_preference
 
 
@@ -2404,6 +2409,497 @@ def chat(
     intent = resolved.get(
         "intent"
     )
+
+    # ------------------------------------------------
+    # DAILY ATTENTION BRIEFING
+    # ------------------------------------------------
+
+    if intent == "daily_briefing":
+
+        briefing_parts = []
+        briefing_data = {
+            "email": [],
+            "calendar": [],
+            "projects": [],
+        }
+
+        # EMAIL ATTENTION
+        try:
+
+            gmail_result = gmail_latest_messages(
+                user_id,
+                10,
+            )
+
+            attention_result = important_summary(
+                gmail_result.get(
+                    "messages",
+                    [],
+                ),
+                limit=3,
+                user_id=user_id,
+            )
+
+            important_mail = attention_result.get(
+                "messages",
+                [],
+            )
+
+            briefing_data["email"] = important_mail
+
+            if important_mail:
+
+                briefing_parts.append(
+                    f"You have {len(important_mail)} "
+                    "email items worth attention."
+                )
+
+                for item in important_mail:
+
+                    briefing_parts.append(
+                        f"{item.get('priority', 'MEDIUM')} priority email: "
+                        f"{item.get('subject', 'No subject')}."
+                    )
+
+        except Exception as exc:
+
+            print(
+                "[BRIEFING EMAIL ERROR]",
+                str(exc),
+            )
+
+        # TODAY'S CALENDAR
+        try:
+
+            access_token, _ = (
+                refresh_google_access_token(
+                    user_id
+                )
+            )
+
+            events = calendar_events(
+                access_token,
+                day="today",
+                max_results=10,
+            )
+
+            briefing_data["calendar"] = events
+
+            if events:
+
+                briefing_parts.append(
+                    f"You have {len(events)} "
+                    "calendar event"
+                    + (
+                        "s"
+                        if len(events) != 1
+                        else ""
+                    )
+                    + " today."
+                )
+
+                for event in events[:3]:
+
+                    briefing_parts.append(
+                        "Calendar: "
+                        + event.get(
+                            "summary",
+                            "Untitled event",
+                        )
+                        + "."
+                    )
+
+        except Exception as exc:
+
+            print(
+                "[BRIEFING CALENDAR ERROR]",
+                str(exc),
+            )
+
+        # PROJECT NEXT ACTIONS
+        try:
+
+            result = table.query(
+                KeyConditionExpression=(
+                    "user_id = :user_id "
+                    "AND begins_with("
+                    "record_key, :prefix)"
+                ),
+                ExpressionAttributeValues={
+                    ":user_id":
+                        user_id,
+                    ":prefix":
+                        "PROJECT#",
+                },
+            )
+
+            projects = result.get(
+                "Items",
+                [],
+            )
+
+            briefing_data["projects"] = projects
+
+            for project in projects[:3]:
+
+                next_action = project.get(
+                    "next_action"
+                )
+
+                if next_action:
+
+                    briefing_parts.append(
+                        "Project "
+                        + project.get(
+                            "project",
+                            "unknown",
+                        )
+                        + ": "
+                        + next_action
+                        + "."
+                    )
+
+        except Exception as exc:
+
+            print(
+                "[BRIEFING PROJECT ERROR]",
+                str(exc),
+            )
+
+        # Build a cleaner NOW / TODAY / LATER briefing.
+
+        now_items = []
+        today_items = []
+        later_items = []
+
+        # Group duplicate important email subjects.
+        subject_counts = {}
+
+        for item in briefing_data["email"]:
+
+            subject = item.get(
+                "subject",
+                "No subject",
+            )
+
+            priority = item.get(
+                "priority",
+                "MEDIUM",
+            )
+
+            key = (
+                subject.strip().lower()
+            )
+
+            if key not in subject_counts:
+                subject_counts[key] = {
+                    "subject": subject,
+                    "count": 0,
+                    "priority": priority,
+                }
+
+            subject_counts[key]["count"] += 1
+
+            if priority == "HIGH":
+                subject_counts[key][
+                    "priority"
+                ] = "HIGH"
+
+        for item in subject_counts.values():
+
+            count = item["count"]
+            subject = item["subject"]
+            priority = item["priority"]
+
+            if count > 1:
+                text = (
+                    f"{count} emails with subject "
+                    f"{subject}"
+                )
+            else:
+                text = subject
+
+            if priority == "HIGH":
+                now_items.append(
+                    "Email: " + text
+                )
+            else:
+                today_items.append(
+                    "Email: " + text
+                )
+
+        # Calendar belongs in TODAY initially.
+        # Events promoted to URGENT are removed later.
+        calendar_today_items = []
+
+        if briefing_data["calendar"]:
+
+            for event in briefing_data[
+                "calendar"
+            ][:3]:
+
+                event_time = event_time_text(
+                    event.get("start")
+                )
+
+                calendar_text = (
+                    "Calendar: "
+                    + event.get(
+                        "summary",
+                        "Untitled event",
+                    )
+                    + (
+                        " at " + event_time
+                        if event_time
+                        else ""
+                    )
+                )
+
+                calendar_today_items.append(
+                    {
+                        "text": calendar_text,
+                        "summary": event.get(
+                            "summary",
+                            "",
+                        ),
+                    }
+                )
+
+        else:
+
+            today_items.append(
+                "Calendar is clear today"
+            )
+
+        # Project next actions belong in TODAY/LATER.
+        for project in briefing_data[
+            "projects"
+        ][:3]:
+
+            next_action = project.get(
+                "next_action"
+            )
+
+            if next_action:
+
+                later_items.append(
+                    "Project "
+                    + project.get(
+                        "project",
+                        "unknown",
+                    )
+                    + ": "
+                    + next_action
+                )
+
+        parts = [
+            "Here is your Hayder briefing."
+        ]
+
+        if now_items:
+
+            parts.append(
+                "NOW: "
+                + "; ".join(
+                    now_items
+                )
+                + "."
+            )
+
+        if today_items:
+
+            parts.append(
+                "TODAY: "
+                + "; ".join(
+                    today_items
+                )
+                + "."
+            )
+
+        if later_items:
+
+            parts.append(
+                "LATER: "
+                + "; ".join(
+                    later_items
+                )
+                + "."
+            )
+
+        if (
+            not now_items
+            and not today_items
+            and not later_items
+        ):
+
+            parts.append(
+                "Nothing currently needs "
+                "your attention."
+            )
+
+        # Time-aware urgency and recommended focus.
+        recommendations = []
+        urgent_items = []
+
+        for event in briefing_data["calendar"]:
+
+            summary_raw = event.get(
+                "summary",
+                "Calendar event",
+            )
+
+            summary = summary_raw.lower()
+
+            minutes_until = (
+                event_minutes_from_now(
+                    event.get("start")
+                )
+            )
+
+            # Interviews within the next 2 hours
+            # become urgent.
+            if (
+                "interview" in summary
+                and minutes_until is not None
+                and 0 <= minutes_until <= 120
+            ):
+
+                hours = (
+                    minutes_until // 60
+                )
+
+                minutes = (
+                    minutes_until % 60
+                )
+
+                if hours > 0 and minutes > 0:
+                    countdown = (
+                        f"{hours} hour"
+                        + (
+                            "s"
+                            if hours != 1
+                            else ""
+                        )
+                        + f" {minutes} minute"
+                        + (
+                            "s"
+                            if minutes != 1
+                            else ""
+                        )
+                    )
+
+                elif hours > 0:
+                    countdown = (
+                        f"{hours} hour"
+                        + (
+                            "s"
+                            if hours != 1
+                            else ""
+                        )
+                    )
+
+                else:
+                    countdown = (
+                        f"{minutes} minutes"
+                    )
+
+                event_time = event_time_text(
+                    event.get("start")
+                )
+
+                urgent_items.append(
+                    f"{summary_raw} is at "
+                    f"{event_time}, about "
+                    f"{countdown} away"
+                )
+
+                recommendations.append(
+                    "Focus on interview preparation now."
+                )
+
+                break
+
+            elif "interview" in summary:
+
+                recommendations.append(
+                    "Keep today's interview preparation "
+                    "ahead of lower-priority work."
+                )
+
+                break
+
+        # Remove calendar events already promoted to URGENT.
+        urgent_summaries = set()
+
+        for item in urgent_items:
+            for event in briefing_data["calendar"]:
+                summary = event.get(
+                    "summary",
+                    "",
+                )
+
+                if summary and summary in item:
+                    urgent_summaries.add(
+                        summary.lower()
+                    )
+
+        for item in calendar_today_items:
+
+            if (
+                item["summary"].lower()
+                not in urgent_summaries
+            ):
+                today_items.append(
+                    item["text"]
+                )
+
+        if urgent_items:
+            parts.insert(
+                1,
+                "URGENT: "
+                + "; ".join(
+                    urgent_items
+                )
+                + "."
+            )
+
+        if now_items and not urgent_items:
+            recommendations.append(
+                "Review the NOW items before "
+                "lower-priority work."
+            )
+
+        if later_items:
+            recommendations.append(
+                "Return to project work after "
+                "today's higher-priority items."
+            )
+
+        if recommendations:
+            parts.append(
+                "RECOMMENDED: "
+                + " ".join(
+                    recommendations
+                )
+            )
+
+        reply = " ".join(parts)
+
+        return response(
+            200,
+            {
+                "assistant":
+                    "Hayder",
+                "tool":
+                    "daily_attention_briefing",
+                "intent":
+                    resolved,
+                "briefing":
+                    briefing_data,
+                "reply":
+                    reply,
+            },
+        )
 
     # ------------------------------------------------
     # IMPORTANT INBOX / ATTENTION ENGINE
