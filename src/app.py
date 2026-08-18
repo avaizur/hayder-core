@@ -55,6 +55,28 @@ GOOGLE_CLIENT_SECRET_SECRET = os.environ.get(
     "hayder/google/client-secret",
 )
 
+GOOGLE_ACCOUNT_LIMITS = {
+    "basic": int(
+        os.environ.get(
+            "HAYDER_GOOGLE_LIMIT_BASIC",
+            "1",
+        )
+    ),
+    "pro": int(
+        os.environ.get(
+            "HAYDER_GOOGLE_LIMIT_PRO",
+            "3",
+        )
+    ),
+    "business": int(
+        os.environ.get(
+            "HAYDER_GOOGLE_LIMIT_BUSINESS",
+            "10",
+        )
+    ),
+}
+
+
 GOOGLE_SCOPE = (
     "https://www.googleapis.com/auth/gmail.readonly "
     "https://www.googleapis.com/auth/calendar.events.readonly"
@@ -651,6 +673,33 @@ def google_connect(
     user_id,
 ):
 
+    capacity = google_account_capacity(
+        user_id
+    )
+
+    if not capacity["can_add"]:
+        return response(
+            403,
+            {
+                "assistant":
+                    "Hayder",
+                "error":
+                    "GOOGLE_ACCOUNT_LIMIT_REACHED",
+                "plan":
+                    capacity["plan"],
+                "account_limit":
+                    capacity["limit"],
+                "connected_accounts":
+                    capacity["connected"],
+                "reply":
+                    (
+                        "Your Hayder "
+                        + capacity["plan"].title()
+                        + " plan has reached its Google account limit."
+                    ),
+            },
+        )
+
     client_id, _ = (
         get_google_credentials()
     )
@@ -679,7 +728,7 @@ def google_connect(
         "include_granted_scopes":
             "true",
         "prompt":
-            "consent",
+            "select_account consent",
         "state":
             state,
     }
@@ -813,6 +862,10 @@ def google_api_get(
 def google_user_secret_name(
     user_id
 ):
+    """Legacy single-account secret.
+
+    Kept temporarily for backward compatibility.
+    """
 
     digest = hashlib.sha256(
         user_id.encode(
@@ -827,39 +880,69 @@ def google_user_secret_name(
     )
 
 
-def store_google_refresh_token(
+def google_account_secret_name(
     user_id,
-    refresh_token,
-    gmail_email,
+    google_email,
 ):
+    """Return a separate secret name for each Google account."""
 
-    secret_name = (
-        google_user_secret_name(
-            user_id
+    user_digest = hashlib.sha256(
+        user_id.encode(
+            "utf-8"
         )
+    ).hexdigest()
+
+    account_digest = hashlib.sha256(
+        google_email
+        .strip()
+        .lower()
+        .encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+    return (
+        "hayder/google/users/"
+        + user_digest
+        + "/accounts/"
+        + account_digest
     )
 
+
+def google_account_record_key(
+    google_email,
+):
+    digest = hashlib.sha256(
+        google_email
+        .strip()
+        .lower()
+        .encode("utf-8")
+    ).hexdigest()
+
+    return (
+        "GOOGLE_ACCOUNT#"
+        + digest
+    )
+
+
+def google_default_record_key():
+    return "GOOGLE_DEFAULT"
+
+
+def put_google_secret(
+    secret_name,
+    connection,
+):
     secret_value = json.dumps(
-        {
-            "refresh_token":
-                refresh_token,
-            "gmail_email":
-                gmail_email,
-            "scope":
-                GOOGLE_SCOPE,
-            "connected_at":
-                now_iso(),
-        }
+        connection
     )
 
     try:
-
         secrets_client.create_secret(
             Name=secret_name,
-            SecretString=
-                secret_value,
+            SecretString=secret_value,
             Description=(
-                "Hayder Gmail OAuth "
+                "Hayder Google OAuth "
                 "refresh token"
             ),
         )
@@ -869,13 +952,520 @@ def store_google_refresh_token(
         .exceptions
         .ResourceExistsException
     ):
-
         secrets_client.put_secret_value(
-            SecretId=
-                secret_name,
-            SecretString=
-                secret_value,
+            SecretId=secret_name,
+            SecretString=secret_value,
         )
+
+
+def read_google_secret(
+    secret_name,
+):
+    try:
+        result = (
+            secrets_client
+            .get_secret_value(
+                SecretId=secret_name
+            )
+        )
+
+    except (
+        secrets_client
+        .exceptions
+        .ResourceNotFoundException
+    ):
+        return None
+
+    secret_string = result.get(
+        "SecretString"
+    )
+
+    if not secret_string:
+        return None
+
+    return json.loads(
+        secret_string
+    )
+
+
+def get_google_default(
+    user_id,
+):
+    result = table.get_item(
+        Key={
+            "user_id": user_id,
+            "record_key":
+                google_default_record_key(),
+        }
+    )
+
+    return result.get("Item")
+
+
+def set_google_default(
+    user_id,
+    google_email,
+    secret_name,
+):
+    table.put_item(
+        Item={
+            "user_id": user_id,
+            "record_key":
+                google_default_record_key(),
+            "provider": "google",
+            "account_email":
+                google_email,
+            "secret_name":
+                secret_name,
+            "updated_at":
+                now_iso(),
+        }
+    )
+
+
+def register_google_account(
+    user_id,
+    google_email,
+    secret_name,
+    scope=GOOGLE_SCOPE,
+):
+    table.put_item(
+        Item={
+            "user_id": user_id,
+            "record_key":
+                google_account_record_key(
+                    google_email
+                ),
+            "provider": "google",
+            "account_email":
+                google_email,
+            "secret_name":
+                secret_name,
+            "scope":
+                scope,
+            "status":
+                "connected",
+            "updated_at":
+                now_iso(),
+        }
+    )
+
+
+def migrate_legacy_google_connection(
+    user_id,
+):
+    """Safely copy the old single-account connection.
+
+    The legacy secret is deliberately NOT deleted.
+    """
+
+    existing_default = (
+        get_google_default(
+            user_id
+        )
+    )
+
+    if existing_default:
+        return existing_default
+
+    legacy_name = (
+        google_user_secret_name(
+            user_id
+        )
+    )
+
+    legacy = read_google_secret(
+        legacy_name
+    )
+
+    if not legacy:
+        return None
+
+    google_email = (
+        legacy.get(
+            "gmail_email"
+        )
+    )
+
+    if not google_email:
+        return None
+
+    account_secret = (
+        google_account_secret_name(
+            user_id,
+            google_email,
+        )
+    )
+
+    migrated = dict(legacy)
+
+    migrated[
+        "connection_type"
+    ] = "google"
+
+    put_google_secret(
+        account_secret,
+        migrated,
+    )
+
+    register_google_account(
+        user_id,
+        google_email,
+        account_secret,
+        migrated.get(
+            "scope",
+            GOOGLE_SCOPE,
+        ),
+    )
+
+    set_google_default(
+        user_id,
+        google_email,
+        account_secret,
+    )
+
+    print(
+        "[GOOGLE MIGRATION] "
+        "Legacy Google connection "
+        "copied into multi-account model."
+    )
+
+    return {
+        "user_id": user_id,
+        "record_key":
+            google_default_record_key(),
+        "provider": "google",
+        "account_email":
+            google_email,
+        "secret_name":
+            account_secret,
+    }
+
+
+def store_google_refresh_token(
+    user_id,
+    refresh_token,
+    gmail_email,
+):
+    # First preserve an existing legacy account
+    # as the default before adding another one.
+    migrate_legacy_google_connection(
+        user_id
+    )
+
+    secret_name = (
+        google_account_secret_name(
+            user_id,
+            gmail_email,
+        )
+    )
+
+    connection = {
+        "refresh_token":
+            refresh_token,
+        "gmail_email":
+            gmail_email,
+        "scope":
+            GOOGLE_SCOPE,
+        "connected_at":
+            now_iso(),
+        "connection_type":
+            "google",
+    }
+
+    put_google_secret(
+        secret_name,
+        connection,
+    )
+
+    register_google_account(
+        user_id,
+        gmail_email,
+        secret_name,
+        GOOGLE_SCOPE,
+    )
+
+    # For a brand-new Hayder user,
+    # make the first connected account default.
+    existing_default = (
+        get_google_default(
+            user_id
+        )
+    )
+
+    if not existing_default:
+        set_google_default(
+            user_id,
+            gmail_email,
+            secret_name,
+        )
+
+
+def get_user_plan(
+    user_id,
+):
+    """Return the user's commercial Hayder plan.
+
+    Unknown users safely default to Basic.
+    """
+
+    result = table.get_item(
+        Key={
+            "user_id":
+                user_id,
+            "record_key":
+                "ACCOUNT_PLAN",
+        }
+    )
+
+    item = result.get(
+        "Item",
+        {}
+    )
+
+    plan = (
+        item.get(
+            "plan",
+            "basic",
+        )
+        .strip()
+        .lower()
+    )
+
+    if plan not in (
+        "basic",
+        "pro",
+        "business",
+    ):
+        return "basic"
+
+    return plan
+
+
+def set_user_plan(
+    user_id,
+    plan,
+):
+    plan_name = (
+        plan
+        .strip()
+        .lower()
+    )
+
+    if plan_name not in (
+        "basic",
+        "pro",
+        "business",
+    ):
+        raise ValueError(
+            "INVALID_PLAN"
+        )
+
+    table.put_item(
+        Item={
+            "user_id":
+                user_id,
+            "record_key":
+                "ACCOUNT_PLAN",
+            "plan":
+                plan_name,
+            "updated_at":
+                now_iso(),
+        }
+    )
+
+    return plan_name
+
+
+def google_account_limit(
+    plan,
+):
+    plan_name = (
+        plan
+        or "basic"
+    ).strip().lower()
+
+    return GOOGLE_ACCOUNT_LIMITS.get(
+        plan_name,
+        GOOGLE_ACCOUNT_LIMITS["basic"],
+    )
+
+
+def google_account_count(
+    user_id,
+):
+    result = table.query(
+        KeyConditionExpression=(
+            "user_id = :user_id "
+            "AND begins_with("
+            "record_key, :prefix)"
+        ),
+        ExpressionAttributeValues={
+            ":user_id":
+                user_id,
+            ":prefix":
+                "GOOGLE_ACCOUNT#",
+        },
+        Select="COUNT",
+    )
+
+    return int(
+        result.get(
+            "Count",
+            0,
+        )
+    )
+
+
+def google_account_capacity(
+    user_id,
+):
+    plan = get_user_plan(
+        user_id
+    )
+
+    limit = google_account_limit(
+        plan
+    )
+
+    count = google_account_count(
+        user_id
+    )
+
+    return {
+        "plan":
+            plan,
+        "limit":
+            limit,
+        "connected":
+            count,
+        "remaining":
+            max(
+                limit - count,
+                0,
+            ),
+        "can_add":
+            count < limit,
+    }
+
+
+def list_google_accounts(
+    user_id,
+):
+    # Automatically migrate the old model
+    # the first time this is called.
+    migrate_legacy_google_connection(
+        user_id
+    )
+
+    result = table.query(
+        KeyConditionExpression=(
+            "user_id = :user_id "
+            "AND begins_with("
+            "record_key, :prefix)"
+        ),
+        ExpressionAttributeValues={
+            ":user_id":
+                user_id,
+            ":prefix":
+                "GOOGLE_ACCOUNT#",
+        },
+    )
+
+    default = get_google_default(
+        user_id
+    )
+
+    default_email = (
+        default.get(
+            "account_email"
+        )
+        if default
+        else None
+    )
+
+    accounts = []
+
+    for item in result.get(
+        "Items",
+        [],
+    ):
+        email = item.get(
+            "account_email"
+        )
+
+        accounts.append(
+            {
+                "email":
+                    email,
+                "scope":
+                    item.get(
+                        "scope",
+                        "",
+                    ),
+                "status":
+                    item.get(
+                        "status",
+                        "connected",
+                    ),
+                "default":
+                    email
+                    == default_email,
+            }
+        )
+
+    return accounts
+
+
+def load_google_connection(
+    user_id,
+    google_email=None,
+):
+    if google_email:
+
+        secret_name = (
+            google_account_secret_name(
+                user_id,
+                google_email,
+            )
+        )
+
+        connection = (
+            read_google_secret(
+                secret_name
+            )
+        )
+
+        if connection:
+            return connection
+
+        return None
+
+    default = get_google_default(
+        user_id
+    )
+
+    if not default:
+
+        default = (
+            migrate_legacy_google_connection(
+                user_id
+            )
+        )
+
+    if not default:
+        return None
+
+    secret_name = default.get(
+        "secret_name"
+    )
+
+    if not secret_name:
+        return None
+
+    return read_google_secret(
+        secret_name
+    )
 
 
 def google_callback(
@@ -1066,55 +1656,17 @@ Return to Hayder Voice
     )
 
 
-def load_google_connection(
-    user_id
-):
-
-    secret_name = (
-        google_user_secret_name(
-            user_id
-        )
-    )
-
-    try:
-
-        result = (
-            secrets_client
-            .get_secret_value(
-                SecretId=
-                    secret_name
-            )
-        )
-
-    except (
-        secrets_client
-        .exceptions
-        .ResourceNotFoundException
-    ):
-
-        return None
-
-    secret_string = (
-        result.get(
-            "SecretString"
-        )
-    )
-
-    if not secret_string:
-        return None
-
-    return json.loads(
-        secret_string
-    )
 
 
 def refresh_google_access_token(
-    user_id
+    user_id,
+    google_email=None,
 ):
 
     connection = (
         load_google_connection(
-            user_id
+            user_id,
+            google_email,
         )
     )
 
@@ -3499,6 +4051,80 @@ def lambda_handler(
         return google_connect(
             event,
             user_id,
+        )
+
+    # ACCOUNT PLAN ADMIN
+    # Temporary development-only route.
+
+    if (
+        method == "POST"
+        and path == "/account/plan"
+    ):
+        body = get_body(event)
+
+        plan = body.get(
+            "plan",
+            ""
+        )
+
+        try:
+            saved_plan = set_user_plan(
+                user_id,
+                plan,
+            )
+
+        except ValueError:
+            return response(
+                400,
+                {
+                    "error":
+                        "Plan must be basic, pro, or business."
+                },
+            )
+
+        return response(
+            200,
+            {
+                "assistant":
+                    "Hayder",
+                "plan":
+                    saved_plan,
+            },
+        )
+
+    # GOOGLE ACCOUNTS
+
+    if (
+        method == "GET"
+        and path == "/google/accounts"
+    ):
+
+        accounts = list_google_accounts(
+            user_id
+        )
+
+        capacity = google_account_capacity(
+            user_id
+        )
+
+        return response(
+            200,
+            {
+                "assistant":
+                    "Hayder",
+                "accounts":
+                    accounts,
+                "plan":
+                    capacity["plan"],
+                "account_limit":
+                    capacity["limit"],
+                "connected_accounts":
+                    capacity["connected"],
+                "remaining_accounts":
+                    capacity["remaining"],
+                "can_add_account":
+                    capacity["can_add"],
+            },
         )
 
     # PROJECT MEMORY
