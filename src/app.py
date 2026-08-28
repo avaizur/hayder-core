@@ -21,6 +21,7 @@ import boto3
 
 from intent import resolve_intent
 from attention import important_summary
+from attention_items import build_attention_items
 from calendar_tool import (
     calendar_events,
     spoken_calendar_summary,
@@ -2450,10 +2451,14 @@ def chat(
     if intent == "daily_briefing":
 
         briefing_parts = []
+        gmail_metadata = []
+        approval_items = []
+        source_errors = {}
         briefing_data = {
             "email": [],
             "calendar": [],
             "projects": [],
+            "attention_items": [],
         }
 
         # EMAIL ATTENTION
@@ -2464,11 +2469,13 @@ def chat(
                 10,
             )
 
+            gmail_metadata = gmail_result.get(
+                "messages",
+                [],
+            )
+
             attention_result = important_summary(
-                gmail_result.get(
-                    "messages",
-                    [],
-                ),
+                gmail_metadata,
                 limit=3,
                 user_id=user_id,
             )
@@ -2495,6 +2502,10 @@ def chat(
                     )
 
         except Exception as exc:
+
+            source_errors["gmail"] = (
+                "Gmail data could not be loaded"
+            )
 
             print(
                 "[BRIEFING EMAIL ERROR]",
@@ -2543,6 +2554,10 @@ def chat(
                     )
 
         except Exception as exc:
+
+            source_errors["calendar"] = (
+                "Calendar data could not be loaded"
+            )
 
             print(
                 "[BRIEFING CALENDAR ERROR]",
@@ -2594,10 +2609,55 @@ def chat(
 
         except Exception as exc:
 
+            source_errors["projects"] = (
+                "Project data could not be loaded"
+            )
+
             print(
                 "[BRIEFING PROJECT ERROR]",
                 str(exc),
             )
+
+        # WAITING APPROVALS
+        try:
+
+            result = approval_table.query(
+                KeyConditionExpression=(
+                    "user_id = :user_id"
+                ),
+                ExpressionAttributeValues={
+                    ":user_id": user_id,
+                },
+            )
+
+            approval_items = result.get(
+                "Items",
+                [],
+            )
+
+        except Exception as exc:
+
+            source_errors["approvals"] = (
+                "Approvals could not be loaded"
+            )
+
+            print(
+                "[BRIEFING APPROVAL ERROR]",
+                str(exc),
+            )
+
+        attention_items = build_attention_items(
+            gmail_metadata=gmail_metadata,
+            calendar_events=briefing_data["calendar"],
+            project_next_actions=briefing_data["projects"],
+            approval_items=approval_items,
+            source_errors=source_errors,
+            now=datetime.now(timezone.utc),
+        )
+
+        briefing_data["attention_items"] = (
+            attention_items
+        )
 
         # Build a cleaner NOW / TODAY / LATER briefing.
 
@@ -2728,6 +2788,17 @@ def chat(
         parts = [
             "Here is your Hayder briefing."
         ]
+
+        if attention_items:
+
+            parts.append(
+                "Needs your attention: "
+                + "; ".join(
+                    item["title"]
+                    for item in attention_items
+                )
+                + "."
+            )
 
         if now_items:
 
