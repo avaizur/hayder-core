@@ -1,4 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+import re
 
 
 URGENCY_ORDER = {
@@ -40,6 +42,99 @@ def _attention_item(item_type, title, reason, urgency, source):
         "urgency": urgency,
         "source": source,
     }
+
+
+_REPLY_REQUEST_RE = re.compile(
+    r"(?:\?|\b(?:can|could|would|will) you\b|\bplease (?:reply|respond|confirm)\b"
+    r"|\blet me know\b|\bwhat do you think\b)",
+    re.IGNORECASE,
+)
+_AUTOMATED_SENDER_RE = re.compile(
+    r"(?:^|[<@._+-])(?:no[._-]?reply|do[._-]?not[._-]?reply|notifications?)(?:[>@._+-]|$)",
+    re.IGNORECASE,
+)
+_AUTOMATED_LABELS = {"CATEGORY_FORUMS", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"}
+
+
+def _message_datetime(message):
+    """Read a Gmail internal timestamp or an RFC 2822 Date header."""
+    internal_date = message.get("internalDate")
+    if internal_date is not None:
+        try:
+            return datetime.fromtimestamp(int(internal_date) / 1000, tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    value = message.get("date")
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
+def _looks_automated(message, labels):
+    sender = str(message.get("from") or "")
+    return bool(_AUTOMATED_SENDER_RE.search(sender) or labels & _AUTOMATED_LABELS)
+
+
+def detect_reply_due_items(gmail_messages, now, follow_up_days=3):
+    """Detect conservative reply candidates from already-fetched Gmail data."""
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    if follow_up_days < 0:
+        raise ValueError("follow_up_days must not be negative")
+
+    messages = gmail_messages or []
+    items = []
+    for message in messages:
+        labels = _email_labels(message)
+        text = " ".join(str(message.get(field) or "") for field in ("subject", "snippet"))
+        if (
+            {"INBOX", "UNREAD", "IMPORTANT"} <= labels
+            and "SENT" not in labels
+            and not _looks_automated(message, labels)
+            and _REPLY_REQUEST_RE.search(text)
+        ):
+            subject = message.get("subject") or "(no subject)"
+            sender = message.get("from") or "unknown sender"
+            items.append(_attention_item(
+                "reply_due", subject,
+                f"Unread message from {sender} appears to request a reply.",
+                "high", "gmail",
+            ))
+
+    cutoff = now - timedelta(days=follow_up_days)
+    threads = {}
+    for message in messages:
+        thread_id = message.get("threadId")
+        sent_at = _message_datetime(message)
+        if thread_id and sent_at is not None:
+            threads.setdefault(str(thread_id), []).append((sent_at, message))
+
+    for thread_messages in threads.values():
+        thread_messages.sort(key=lambda entry: entry[0])
+        sent_at, latest = thread_messages[-1]
+        labels = _email_labels(latest)
+        if "SENT" not in labels or sent_at >= cutoff:
+            continue
+        if labels & {"DRAFT", "SPAM", "TRASH"}:
+            continue
+        subject = latest.get("subject") or "(no subject)"
+        items.append(_attention_item(
+            "follow_up_due", subject,
+            f"Sent {follow_up_days}+ days ago with no later reply in the thread.",
+            "medium", "gmail",
+        ))
+
+    return sorted(items, key=lambda item: (
+        URGENCY_ORDER[item["urgency"]], item["type"],
+        item["title"].lower(), item["source"],
+    ))
 
 
 def build_attention_items(
