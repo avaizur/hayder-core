@@ -45,6 +45,36 @@ class BuildAttentionItemsTests(unittest.TestCase):
         self.assertEqual(items[0]["title"], "Action required")
         self.assertEqual(items[0]["urgency"], "high")
 
+    def test_includes_reply_due_without_duplicate_important_unread_item(self):
+        items = self.build(
+            gmail_metadata=[
+                {
+                    "subject": "Can you confirm the launch time?",
+                    "from": "Alex <alex@example.com>",
+                    "snippet": "Please reply when you can.",
+                    "labelIds": ["INBOX", "UNREAD", "IMPORTANT"],
+                }
+            ]
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["type"], "reply_due")
+        self.assertEqual(items[0]["title"], "Can you confirm the launch time?")
+
+    def test_does_not_include_follow_up_due_items(self):
+        items = self.build(
+            gmail_metadata=[
+                {
+                    "threadId": "waiting",
+                    "subject": "Proposal",
+                    "date": "Mon, 24 Aug 2026 09:00:00 +0000",
+                    "labelIds": ["SENT"],
+                }
+            ]
+        )
+
+        self.assertEqual(items, [])
+
     def test_marks_imminent_meetings_and_ignores_past_or_all_day_events(self):
         items = self.build(
             calendar_events=[

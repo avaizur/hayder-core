@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import re
@@ -162,6 +163,17 @@ def build_attention_items(
 
     items = []
 
+    reply_due_items = [
+        item
+        for item in detect_reply_due_items(gmail_metadata, now)
+        if item["type"] == "reply_due"
+    ]
+    items.extend(reply_due_items)
+    reply_due_counts = Counter(
+        (item["title"], item["reason"])
+        for item in reply_due_items
+    )
+
     for message in gmail_metadata or []:
         labels = _email_labels(message)
 
@@ -170,6 +182,14 @@ def build_attention_items(
 
         subject = message.get("subject") or "(no subject)"
         sender = message.get("from") or "unknown sender"
+        reply_due_key = (
+            subject,
+            f"Unread message from {sender} appears to request a reply.",
+        )
+        if reply_due_counts[reply_due_key]:
+            reply_due_counts[reply_due_key] -= 1
+            continue
+
         items.append(
             _attention_item(
                 "important_unread_email",
