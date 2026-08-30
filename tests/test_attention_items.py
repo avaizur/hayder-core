@@ -59,7 +59,11 @@ class BuildAttentionItemsTests(unittest.TestCase):
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["type"], "reply_due")
-        self.assertEqual(items[0]["title"], "Can you confirm the launch time?")
+        self.assertEqual(
+            items[0]["title"],
+            "Reply needed: Can you confirm the launch time?",
+        )
+        self.assertEqual(items[0]["reason"], "From Alex <alex@example.com>.")
 
     def test_does_not_include_follow_up_due_items(self):
         items = self.build(

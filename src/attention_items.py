@@ -83,6 +83,18 @@ def _looks_automated(message, labels):
     return bool(_AUTOMATED_SENDER_RE.search(sender) or labels & _AUTOMATED_LABELS)
 
 
+def _reply_due_item(message):
+    subject = message.get("subject") or "(no subject)"
+    sender = message.get("from") or "unknown sender"
+    return _attention_item(
+        "reply_due",
+        f"Reply needed: {subject}",
+        f"From {sender}.",
+        "high",
+        "gmail",
+    )
+
+
 def detect_reply_due_items(gmail_messages, now, follow_up_days=3):
     """Detect conservative reply candidates from already-fetched Gmail data."""
     if now.tzinfo is None:
@@ -101,13 +113,7 @@ def detect_reply_due_items(gmail_messages, now, follow_up_days=3):
             and not _looks_automated(message, labels)
             and _REPLY_REQUEST_RE.search(text)
         ):
-            subject = message.get("subject") or "(no subject)"
-            sender = message.get("from") or "unknown sender"
-            items.append(_attention_item(
-                "reply_due", subject,
-                f"Unread message from {sender} appears to request a reply.",
-                "high", "gmail",
-            ))
+            items.append(_reply_due_item(message))
 
     cutoff = now - timedelta(days=follow_up_days)
     threads = {}
@@ -180,12 +186,8 @@ def build_attention_items(
         if "UNREAD" not in labels or "IMPORTANT" not in labels:
             continue
 
-        subject = message.get("subject") or "(no subject)"
-        sender = message.get("from") or "unknown sender"
-        reply_due_key = (
-            subject,
-            f"Unread message from {sender} appears to request a reply.",
-        )
+        reply_due = _reply_due_item(message)
+        reply_due_key = (reply_due["title"], reply_due["reason"])
         if reply_due_counts[reply_due_key]:
             reply_due_counts[reply_due_key] -= 1
             continue

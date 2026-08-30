@@ -42,7 +42,11 @@ class DetectReplyDueItemsTests(unittest.TestCase):
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["type"], "reply_due")
-        self.assertEqual(items[0]["title"], "Can you confirm the launch time?")
+        self.assertEqual(
+            items[0]["title"],
+            "Reply needed: Can you confirm the launch time?",
+        )
+        self.assertEqual(items[0]["reason"], "From Alex <alex@example.com>.")
         self.assertEqual(items[0]["source"], "gmail")
 
     def test_detects_old_sent_message_when_it_is_latest_in_thread(self):
