@@ -146,17 +146,57 @@ class BuildAttentionItemsTests(unittest.TestCase):
         self.assertEqual(items[0]["type"], "waiting_approval")
         self.assertEqual(items[0]["title"], "Deploy release")
 
-    def test_adds_explicit_errors_and_ignores_false_flags(self):
+    def test_adds_safe_generic_source_errors_and_ignores_false_flags(self):
         items = self.build(
             source_errors={
-                "gmail": "Gmail timed out.",
+                "gmail": "Sensitive backend failure details.",
                 "calendar": True,
                 "approvals": False,
             }
         )
 
         self.assertEqual([item["source"] for item in items], ["calendar", "gmail"])
-        self.assertEqual(items[1]["reason"], "Gmail timed out.")
+        self.assertEqual(
+            {item["reason"] for item in items},
+            {"Some information may be missing. Try again later."},
+        )
+        self.assertTrue(all(item["urgency"] == "low" for item in items))
+        self.assertNotIn("Sensitive backend failure details.", str(items))
+
+    def test_source_errors_sort_below_user_action_items(self):
+        items = self.build(
+            gmail_metadata=[
+                {
+                    "subject": "Can you confirm?",
+                    "from": "person@example.com",
+                    "labelIds": ["INBOX", "UNREAD", "IMPORTANT"],
+                }
+            ],
+            calendar_events=[
+                {
+                    "summary": "Stand-up",
+                    "start": "2026-08-28T09:20:00Z",
+                    "end": "2026-08-28T09:40:00Z",
+                },
+                {
+                    "summary": "Review",
+                    "start": "2026-08-28T09:10:00Z",
+                    "end": "2026-08-28T09:30:00Z",
+                },
+            ],
+            approval_items=[
+                {
+                    "summary": "Deploy release",
+                    "status": "WAITING_APPROVAL",
+                }
+            ],
+            source_errors={"projects": True},
+        )
+
+        self.assertEqual(items[-1]["type"], "source_error")
+        self.assertTrue(
+            all(item["type"] != "source_error" for item in items[:-1])
+        )
 
     def test_output_order_is_deterministic_and_projects_are_not_yet_emitted(self):
         inputs = {

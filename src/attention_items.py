@@ -8,6 +8,7 @@ URGENCY_ORDER = {
     "urgent": 0,
     "high": 1,
     "medium": 2,
+    "low": 3,
 }
 
 
@@ -285,13 +286,12 @@ def build_attention_items(
         if not error:
             continue
 
-        reason = error if isinstance(error, str) else "The source could not be read."
         items.append(
             _attention_item(
                 "source_error",
                 f"{source} data unavailable",
-                reason,
-                "medium",
+                "Some information may be missing. Try again later.",
+                "low",
                 source,
             )
         )
