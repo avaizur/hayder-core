@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
-from attention_items import build_attention_items
+from attention_items import _attention_item_sort_key, build_attention_items
 
 
 NOW = datetime(2026, 8, 28, 9, 0, tzinfo=timezone.utc)
@@ -178,6 +178,29 @@ class BuildAttentionItemsTests(unittest.TestCase):
     def test_requires_timezone_aware_now(self):
         with self.assertRaisesRegex(ValueError, "timezone-aware"):
             self.build(now=datetime(2026, 8, 28, 9, 0))
+
+    def test_reply_due_sorts_above_important_unread_email(self):
+        items = [
+            {
+                "type": "important_unread_email",
+                "title": "Important message",
+                "urgency": "high",
+                "source": "gmail",
+            },
+            {
+                "type": "reply_due",
+                "title": "Reply needed",
+                "urgency": "high",
+                "source": "gmail",
+            },
+        ]
+
+        ordered = sorted(items, key=_attention_item_sort_key)
+
+        self.assertEqual(
+            [item["type"] for item in ordered],
+            ["reply_due", "important_unread_email"],
+        )
 
 
 if __name__ == "__main__":

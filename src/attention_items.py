@@ -11,6 +11,21 @@ URGENCY_ORDER = {
 }
 
 
+TYPE_ORDER = {
+    "reply_due": "important_unread_email",
+    "important_unread_email": "reply_due",
+}
+
+
+def _attention_item_sort_key(item):
+    return (
+        URGENCY_ORDER[item["urgency"]],
+        TYPE_ORDER.get(item["type"], item["type"]),
+        item["title"].lower(),
+        item["source"],
+    )
+
+
 def _parse_datetime(value):
     if not value or "T" not in value:
         return None
@@ -281,10 +296,5 @@ def build_attention_items(
 
     return sorted(
         items,
-        key=lambda item: (
-            URGENCY_ORDER[item["urgency"]],
-            item["type"],
-            item["title"].lower(),
-            item["source"],
-        ),
+        key=_attention_item_sort_key,
     )
