@@ -207,6 +207,8 @@ def build_attention_items(
             reply_due_counts[reply_due_key] -= 1
             continue
 
+        subject = message.get("subject") or "(no subject)"
+        sender = message.get("from") or "unknown sender"
         items.append(
             _attention_item(
                 "important_unread_email",
