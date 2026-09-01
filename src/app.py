@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from urllib.parse import (
     parse_qs,
     quote,
@@ -58,6 +59,7 @@ GOOGLE_CLIENT_SECRET_SECRET = os.environ.get(
 
 GOOGLE_SCOPE = (
     "https://www.googleapis.com/auth/gmail.readonly "
+    "https://www.googleapis.com/auth/gmail.send "
     "https://www.googleapis.com/auth/calendar.events.readonly"
 )
 
@@ -699,7 +701,7 @@ def google_connect(
             "authorization_url":
                 authorization_url,
             "scope":
-                "gmail.readonly",
+                "gmail.readonly gmail.send",
             "message":
                 "Open authorization_url "
                 "in your browser to connect Gmail."
@@ -809,6 +811,26 @@ def google_api_get(
             f"Gmail returned HTTP "
             f"{exc.code}"
         )
+
+
+def google_api_post(url, access_token, payload):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + access_token,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=20) as api_response:
+            return json.loads(api_response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        print("[GMAIL HTTP ERROR]", exc.code, error_body)
+        raise RuntimeError(f"Gmail returned HTTP {exc.code}")
 
 
 def google_user_secret_name(
@@ -1032,12 +1054,12 @@ Connected Gmail account:
 
 <p>
 Permission:
-<strong>Read only</strong>
+<strong>Read email and send approved email</strong>
 </p>
 
 <p>
-Hayder cannot send or delete email
-with this Gmail permission.
+Hayder can send email only after explicit
+approval. Hayder cannot delete email.
 </p>
 
 <p>
@@ -1203,6 +1225,25 @@ def refresh_google_access_token(
     return (
         access_token,
         connection,
+    )
+
+
+def gmail_send_email(user_id, email_details):
+    access_token, _ = refresh_google_access_token(user_id)
+
+    message = EmailMessage()
+    message["To"] = email_details["to"]
+    message["Subject"] = email_details["subject"]
+    message.set_content(email_details["body"])
+
+    raw = base64.urlsafe_b64encode(
+        message.as_bytes()
+    ).decode("ascii").rstrip("=")
+
+    return google_api_post(
+        GMAIL_BASE_URL + "/users/me/messages/send",
+        access_token,
+        {"raw": raw},
     )
 
 
@@ -1491,6 +1532,10 @@ def create_approval_record(
             None,
         "executed_at":
             None,
+        "execution_status":
+            "PENDING",
+        "execution_error":
+            None,
     }
 
     approval_table.put_item(
@@ -1561,20 +1606,55 @@ def create_approval(
             },
         )
 
+    details = payload.get(
+        "details",
+        {},
+    )
+
+    if action_type == "email_send":
+        required_email_fields = ("to", "subject", "body")
+        if not isinstance(details, dict):
+            details = {}
+
+        invalid_email_fields = [
+            field
+            for field in required_email_fields
+            if not isinstance(details.get(field), str)
+            or not details[field].strip()
+        ]
+        recipient = details.get("to", "")
+        if (
+            "to" not in invalid_email_fields
+            and not re.fullmatch(
+                r"[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+",
+                recipient.strip(),
+            )
+        ):
+            invalid_email_fields.append("to")
+
+        if invalid_email_fields:
+            return response(
+                400,
+                {
+                    "error": "Invalid email_send details",
+                    "required": list(required_email_fields),
+                    "invalid": sorted(set(invalid_email_fields)),
+                },
+            )
+
+        # Freeze the executable payload to these fields only.
+        details = {
+            "to": recipient.strip(),
+            "subject": details["subject"],
+            "body": details["body"],
+        }
+
     item = create_approval_record(
-        user_id=
-            user_id,
-        action_type=
-            action_type,
-        target=
-            payload["target"],
-        summary=
-            payload["summary"],
-        details=
-            payload.get(
-                "details",
-                {},
-            ),
+        user_id=user_id,
+        action_type=action_type,
+        target=payload["target"],
+        summary=payload["summary"],
+        details=details,
     )
 
     return response(
@@ -1695,6 +1775,143 @@ def update_approval_status(
         ],
         None,
     )
+
+
+def get_approval_record(user_id, approval_id):
+    return approval_table.get_item(
+        Key={"user_id": user_id, "approval_id": approval_id}
+    ).get("Item")
+
+
+def claim_email_execution(user_id, approval_id):
+    now = now_iso()
+    try:
+        result = approval_table.update_item(
+            Key={"user_id": user_id, "approval_id": approval_id},
+            UpdateExpression=(
+                "SET #execution_status = :executing, "
+                "#updated_at = :now"
+            ),
+            ConditionExpression=(
+                "#status = :approved "
+                "AND #action_type = :email_send "
+                "AND #execution_status = :pending"
+            ),
+            ExpressionAttributeNames={
+                "#status": "status",
+                "#action_type": "action_type",
+                "#execution_status": "execution_status",
+                "#updated_at": "updated_at",
+            },
+            ExpressionAttributeValues={
+                ":approved": "APPROVED",
+                ":email_send": "email_send",
+                ":pending": "PENDING",
+                ":executing": "EXECUTING",
+                ":now": now,
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except (
+        approval_table.meta.client.exceptions
+        .ConditionalCheckFailedException
+    ):
+        return None
+    return result["Attributes"]
+
+
+def finish_email_execution(
+    user_id, approval_id, execution_status, execution_error=None
+):
+    now = now_iso()
+    names = {
+        "#execution_status": "execution_status",
+        "#execution_error": "execution_error",
+        "#updated_at": "updated_at",
+    }
+    values = {
+        ":execution_status": execution_status,
+        ":executing": "EXECUTING",
+        ":execution_error": execution_error,
+        ":now": now,
+    }
+    expression = (
+        "SET #execution_status = :execution_status, "
+        "#execution_error = :execution_error, "
+        "#updated_at = :now"
+    )
+    if execution_status == "EXECUTED":
+        names["#executed_at"] = "executed_at"
+        values[":executed_at"] = now
+        expression += ", #executed_at = :executed_at"
+
+    result = approval_table.update_item(
+        Key={"user_id": user_id, "approval_id": approval_id},
+        UpdateExpression=expression,
+        ConditionExpression="#execution_status = :executing",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
+    return result["Attributes"]
+
+
+def validate_frozen_email_details(details):
+    return (
+        isinstance(details, dict)
+        and set(details) == {"to", "subject", "body"}
+        and all(
+            isinstance(details.get(field), str)
+            and bool(details[field].strip())
+            for field in ("to", "subject", "body")
+        )
+        and bool(
+            re.fullmatch(
+                r"[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+",
+                details["to"],
+            )
+        )
+    )
+
+
+def execute_approved_email(user_id, approval_id):
+    item = claim_email_execution(user_id, approval_id)
+    if not item:
+        return get_approval_record(user_id, approval_id)
+
+    details = item.get("details")
+    if not validate_frozen_email_details(details):
+        return finish_email_execution(
+            user_id, approval_id, "FAILED", "INVALID_EMAIL_DETAILS"
+        )
+
+    try:
+        gmail_send_email(user_id, details)
+    except Exception as exc:
+        print("[APPROVED EMAIL SEND ERROR]", str(exc))
+        return finish_email_execution(
+            user_id, approval_id, "FAILED", str(exc)[:500]
+        )
+
+    return finish_email_execution(
+        user_id, approval_id, "EXECUTED"
+    )
+
+
+def decide_approval(user_id, approval_id, new_status):
+    item, error = update_approval_status(
+        user_id, approval_id, new_status
+    )
+    if error:
+        return item, error
+
+    if (
+        new_status == "APPROVED"
+        and item.get("action_type") == "email_send"
+    ):
+        item = execute_approved_email(user_id, approval_id)
+
+    return item, None
 
 
 # ------------------------------------------------
@@ -2285,7 +2502,7 @@ def chat(
         ) = approval_command
 
         item, error = (
-            update_approval_status(
+            decide_approval(
                 user_id,
                 approval_id,
                 new_status,
@@ -2334,13 +2551,22 @@ def chat(
                     approval_id,
                 "status":
                     item["status"],
+                "execution_status":
+                    item.get("execution_status"),
                 "reply":
-                    "Approval "
-                    f"{approval_id} "
-                    "is now "
-                    f"{item['status']}. "
-                    "No external action "
-                    "has been executed yet."
+                    (
+                        "Approval "
+                        f"{approval_id} is now "
+                        f"{item['status']}. "
+                        "Email execution is "
+                        f"{item['execution_status']}."
+                        if item.get("action_type") == "email_send"
+                        else
+                        "Approval "
+                        f"{approval_id} is now "
+                        f"{item['status']}. "
+                        "No external action has been executed yet."
+                    )
             },
         )
 
@@ -3718,7 +3944,7 @@ def lambda_handler(
         )
 
         item, error = (
-            update_approval_status(
+            decide_approval(
                 user_id,
                 approval_id,
                 "APPROVED",
@@ -3752,6 +3978,8 @@ def lambda_handler(
                     approval_id,
                 "status":
                     item["status"],
+                "execution_status":
+                    item.get("execution_status"),
                 "summary":
                     item["summary"],
             },
@@ -3775,7 +4003,7 @@ def lambda_handler(
         )
 
         item, error = (
-            update_approval_status(
+            decide_approval(
                 user_id,
                 approval_id,
                 "REJECTED",
@@ -3809,6 +4037,8 @@ def lambda_handler(
                     approval_id,
                 "status":
                     item["status"],
+                "execution_status":
+                    item.get("execution_status"),
                 "summary":
                     item["summary"],
             },
