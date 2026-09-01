@@ -701,10 +701,12 @@ def google_connect(
             "authorization_url":
                 authorization_url,
             "scope":
-                "gmail.readonly gmail.send",
+                "gmail.readonly gmail.send "
+                "calendar.events.readonly",
             "message":
                 "Open authorization_url "
-                "in your browser to connect Gmail."
+                "in your browser to connect Gmail read/send "
+                "and read-only Calendar access."
         },
     )
 
@@ -1054,12 +1056,13 @@ Connected Gmail account:
 
 <p>
 Permission:
-<strong>Read email and send approved email</strong>
+<strong>Read email, send approved email, and read Calendar events</strong>
 </p>
 
 <p>
 Hayder can send email only after explicit
-approval. Hayder cannot delete email.
+approval. Calendar access is read-only.
+Hayder cannot delete email or change Calendar events.
 </p>
 
 <p>
@@ -2076,9 +2079,12 @@ def detect_sensitive_action(
             "email_send",
             [
                 "send email",
+                "send an email",
                 "send the email",
+                "send this email",
                 "email this",
                 "send message",
+                "send a message",
                 "send the message",
             ],
         ),
@@ -2185,6 +2191,57 @@ def detect_approval_command(
         )
 
     return None
+
+
+def normalize_email_draft(draft):
+    if not isinstance(draft, dict):
+        return None
+
+    normalized = {
+        field: draft.get(field, "").strip()
+        if isinstance(draft.get(field), str)
+        else ""
+        for field in ("to", "subject", "body")
+    }
+
+    if not validate_frozen_email_details(normalized):
+        return None
+
+    return normalized
+
+
+def extract_email_draft(payload, message):
+    structured = normalize_email_draft(
+        payload.get("email_draft")
+    )
+    if structured:
+        return structured
+
+    match = re.fullmatch(
+        r"\s*(?:send (?:an? )?email\s*)?"
+        r"to:\s*(?P<to>[^\r\n]+)\s*[\r\n]+"
+        r"subject:\s*(?P<subject>[^\r\n]+)\s*[\r\n]+"
+        r"body:\s*(?P<body>[\s\S]+?)\s*",
+        message,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    return normalize_email_draft(match.groupdict())
+
+
+def email_execution_reply(item):
+    execution_status = item.get("execution_status")
+    if execution_status == "EXECUTED":
+        return "Email sent."
+    if execution_status == "FAILED":
+        return (
+            "The email could not be sent. "
+            "It was not retried; please check your Google connection "
+            "and create a new approval if you want to try again."
+        )
+    return "The email has not been sent."
 
 
 # ------------------------------------------------
@@ -2524,6 +2581,15 @@ def chat(
 
         if error == "ALREADY_CHANGED":
 
+            if item.get("action_type") == "email_send":
+                reply_text = email_execution_reply(item)
+            else:
+                reply_text = (
+                    "That approval request "
+                    "has already been "
+                    f"{item.get('status')}."
+                )
+
             return response(
                 409,
                 {
@@ -2535,10 +2601,12 @@ def chat(
                         item.get(
                             "status"
                         ),
+                    "execution_status":
+                        item.get(
+                            "execution_status"
+                        ),
                     "reply":
-                        "That approval request "
-                        "has already been "
-                        f"{item.get('status')}."
+                        reply_text,
                 },
             )
 
@@ -2555,11 +2623,7 @@ def chat(
                     item.get("execution_status"),
                 "reply":
                     (
-                        "Approval "
-                        f"{approval_id} is now "
-                        f"{item['status']}. "
-                        "Email execution is "
-                        f"{item['execution_status']}."
+                        email_execution_reply(item)
                         if item.get("action_type") == "email_send"
                         else
                         "Approval "
@@ -2577,6 +2641,55 @@ def chat(
     )
 
     if sensitive_action:
+
+        if sensitive_action["action_type"] == "email_send":
+            email_draft = extract_email_draft(payload, message)
+
+            if not email_draft:
+                return response(
+                    200,
+                    {
+                        "assistant": "Hayder",
+                        "approval_required": False,
+                        "action_type": "email_send",
+                        "reply": (
+                            "I have not created an approval or sent anything. "
+                            "Provide a complete email draft with recipient, "
+                            "subject, and body."
+                        ),
+                    },
+                )
+
+            item = create_approval_record(
+                user_id=user_id,
+                action_type="email_send",
+                target=email_draft["to"],
+                summary="Send email to " + email_draft["to"],
+                details=email_draft,
+            )
+
+            preview = (
+                "Email draft awaiting approval:\n"
+                f"To: {email_draft['to']}\n"
+                f"Subject: {email_draft['subject']}\n"
+                f"Body:\n{email_draft['body']}\n\n"
+                "Nothing has been sent. To approve it, say: Approve "
+                f"{item['approval_id']}"
+            )
+
+            return response(
+                200,
+                {
+                    "assistant": "Hayder",
+                    "approval_required": True,
+                    "approval_id": item["approval_id"],
+                    "status": item["status"],
+                    "action_type": item["action_type"],
+                    "target": item["target"],
+                    "email_draft": email_draft,
+                    "reply": preview,
+                },
+            )
 
         item = (
             create_approval_record(

@@ -85,6 +85,12 @@ class GoogleSingleAccountTests(unittest.TestCase):
         self.assertEqual(result["statusCode"], 200)
         self.assertEqual(query["prompt"], ["select_account consent"])
         self.assertEqual(query["access_type"], ["offline"])
+        self.assertEqual(
+            body["scope"],
+            "gmail.readonly gmail.send calendar.events.readonly",
+        )
+        self.assertIn("Gmail read/send", body["message"])
+        self.assertIn("read-only Calendar", body["message"])
 
     def test_reconnecting_replaces_the_users_single_secret(self):
         secrets = FakeSecretsClient()

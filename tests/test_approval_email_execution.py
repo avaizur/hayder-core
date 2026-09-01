@@ -35,6 +35,81 @@ app = importlib.import_module("app")
 
 
 class ApprovalEmailExecutionTests(unittest.TestCase):
+    def test_chat_complete_email_draft_is_frozen_and_previewed(self):
+        approval_table = Mock()
+
+        with patch.object(app, "approval_table", approval_table):
+            result = app.chat(
+                "user-1",
+                {
+                    "message": "Send an email",
+                    "email_draft": {
+                        "to": " customer@example.com ",
+                        "subject": " Status ",
+                        "body": " Ready ",
+                        "ignored": "not executable",
+                    },
+                },
+            )
+
+        response_body = json.loads(result["body"])
+        item = approval_table.put_item.call_args.kwargs["Item"]
+        expected = {
+            "to": "customer@example.com",
+            "subject": "Status",
+            "body": "Ready",
+        }
+        self.assertEqual(item["details"], expected)
+        self.assertEqual(response_body["email_draft"], expected)
+        self.assertTrue(response_body["approval_required"])
+        self.assertIn("To: customer@example.com", response_body["reply"])
+        self.assertIn("Subject: Status", response_body["reply"])
+        self.assertIn("Body:\nReady", response_body["reply"])
+        self.assertIn("Nothing has been sent", response_body["reply"])
+
+    def test_chat_labeled_complete_email_draft_is_structured(self):
+        approval_table = Mock()
+        message = (
+            "Send email\n"
+            "To: customer@example.com\n"
+            "Subject: Status\n"
+            "Body: Ready\nThanks"
+        )
+
+        with patch.object(app, "approval_table", approval_table):
+            app.chat("user-1", {"message": message})
+
+        item = approval_table.put_item.call_args.kwargs["Item"]
+        self.assertEqual(
+            item["details"],
+            {
+                "to": "customer@example.com",
+                "subject": "Status",
+                "body": "Ready\nThanks",
+            },
+        )
+
+    def test_chat_incomplete_email_request_creates_no_approval(self):
+        approval_table = Mock()
+
+        with patch.object(app, "approval_table", approval_table):
+            result = app.chat(
+                "user-1",
+                {
+                    "message": "Send the email",
+                    "email_draft": {
+                        "to": "customer@example.com",
+                        "body": "Ready",
+                    },
+                },
+            )
+
+        response_body = json.loads(result["body"])
+        approval_table.put_item.assert_not_called()
+        self.assertFalse(response_body["approval_required"])
+        self.assertIn("not created an approval", response_body["reply"])
+        self.assertIn("or sent anything", response_body["reply"])
+
     def test_structured_email_is_validated_and_frozen_at_creation(self):
         approval_table = Mock()
         payload = {
@@ -213,6 +288,7 @@ class ApprovalEmailExecutionTests(unittest.TestCase):
             )
         decide.assert_called_once_with("user-1", approval_id, "APPROVED")
         self.assertEqual(json.loads(chat_result["body"])["execution_status"], "EXECUTED")
+        self.assertEqual(json.loads(chat_result["body"])["reply"], "Email sent.")
 
         event = {
             "rawPath": "/approval/" + approval_id + "/approve",
@@ -228,6 +304,28 @@ class ApprovalEmailExecutionTests(unittest.TestCase):
             http_result = app.lambda_handler(event, None)
         decide.assert_called_once_with("user-1", approval_id, "APPROVED")
         self.assertEqual(json.loads(http_result["body"])["execution_status"], "EXECUTED")
+
+    def test_chat_email_failure_hides_internal_error(self):
+        approval_id = "00000000-0000-0000-0000-000000000001"
+        item = {
+            "approval_id": approval_id,
+            "status": "APPROVED",
+            "action_type": "email_send",
+            "execution_status": "FAILED",
+            "execution_error": "secret upstream details",
+        }
+
+        with patch.object(
+            app, "decide_approval", return_value=(item, None)
+        ):
+            result = app.chat(
+                "user-1", {"message": "Approve " + approval_id}
+            )
+
+        response_body = json.loads(result["body"])
+        self.assertEqual(response_body["execution_status"], "FAILED")
+        self.assertIn("could not be sent", response_body["reply"])
+        self.assertNotIn("secret upstream details", response_body["reply"])
 
     def test_claim_is_conditioned_on_approved_email_pending_state(self):
         table = Mock()

@@ -210,7 +210,7 @@ Send command
 <button
     id="googleButton"
     class="secondary">
-🔗 Connect Google Gmail + Calendar
+🔗 Connect Google: Gmail read/send + Calendar read
 </button>
 
 <button
