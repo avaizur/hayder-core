@@ -130,7 +130,7 @@ class BuildAttentionItemsTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         self.assertEqual(conflicts[0]["title"], "Calendar conflict: Alpha and Beta")
 
-    def test_includes_only_waiting_approvals(self):
+    def test_keeps_waiting_approval_behavior_unchanged(self):
         items = self.build(
             approval_items=[
                 {
@@ -138,13 +138,45 @@ class BuildAttentionItemsTests(unittest.TestCase):
                     "action_type": "deployment",
                     "status": "WAITING_APPROVAL",
                 },
-                {"summary": "Old request", "status": "APPROVED"},
             ]
         )
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["type"], "waiting_approval")
         self.assertEqual(items[0]["title"], "Deploy release")
+        self.assertEqual(
+            items[0]["reason"],
+            "deployment is waiting for your approval.",
+        )
+
+    def test_includes_approved_unfinished_actions_without_raw_errors(self):
+        items = self.build(
+            approval_items=[
+                {"summary": "Pending deployment", "status": "APPROVED", "execution_status": "PENDING"},
+                {"summary": "Running export", "status": "APPROVED", "execution_status": "EXECUTING"},
+                {
+                    "summary": "Failed email",
+                    "status": "APPROVED",
+                    "execution_status": "FAILED",
+                    "execution_error": "secret backend details",
+                },
+                {"summary": "Completed email", "status": "APPROVED", "execution_status": "EXECUTED"},
+                {"summary": "Rejected action", "status": "REJECTED", "execution_status": "PENDING"},
+            ]
+        )
+
+        self.assertEqual(len(items), 3)
+        self.assertEqual(
+            {item["title"] for item in items},
+            {"Pending deployment", "Running export", "Failed email"},
+        )
+        self.assertTrue(all(item["type"] == "unfinished_action" for item in items))
+        self.assertTrue(all(item["urgency"] == "high" for item in items))
+        self.assertEqual(
+            {item["reason"] for item in items},
+            {"This approved action has not finished. Review it before taking any further action."},
+        )
+        self.assertNotIn("secret backend details", str(items))
 
     def test_adds_safe_generic_source_errors_and_ignores_false_flags(self):
         items = self.build(

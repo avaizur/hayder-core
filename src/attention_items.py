@@ -267,20 +267,38 @@ def build_attention_items(
                 )
 
     for approval in approval_items or []:
-        if approval.get("status") != "WAITING_APPROVAL":
+        status = approval.get("status")
+        execution_status = approval.get("execution_status")
+
+        if status == "WAITING_APPROVAL":
+            title = approval.get("summary") or "Approval waiting"
+            action_type = approval.get("action_type") or "action"
+            items.append(
+                _attention_item(
+                    "waiting_approval",
+                    title,
+                    f"{action_type} is waiting for your approval.",
+                    "high",
+                    "approvals",
+                )
+            )
             continue
 
-        title = approval.get("summary") or "Approval waiting"
-        action_type = approval.get("action_type") or "action"
-        items.append(
-            _attention_item(
-                "waiting_approval",
-                title,
-                f"{action_type} is waiting for your approval.",
-                "high",
-                "approvals",
+        if (
+            status == "APPROVED"
+            and execution_status in {"PENDING", "EXECUTING", "FAILED"}
+        ):
+            title = approval.get("summary") or "Approved action unfinished"
+            items.append(
+                _attention_item(
+                    "unfinished_action",
+                    title,
+                    "This approved action has not finished. Review it before "
+                    "taking any further action.",
+                    "high",
+                    "approvals",
+                )
             )
-        )
 
     for source, error in sorted((source_errors or {}).items()):
         if not error:

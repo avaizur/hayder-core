@@ -93,6 +93,51 @@ class DailyBriefingAttentionIntegrationTests(unittest.TestCase):
         self.assertEqual(body["briefing"]["attention_items"], attention_items)
         self.assertIn("Needs your attention: Deploy release.", body["reply"])
 
+    def test_renders_approved_unfinished_action_as_safe_reminder(self):
+        approval_table = Mock()
+        approval_table.query.return_value = {
+            "Items": [
+                {
+                    "summary": "Send customer update",
+                    "status": "APPROVED",
+                    "execution_status": "FAILED",
+                    "execution_error": "private provider failure details",
+                }
+            ]
+        }
+        project_table = Mock()
+        project_table.query.return_value = {"Items": []}
+
+        with (
+            patch.object(app, "resolve_intent", return_value={"intent": "daily_briefing"}),
+            patch.object(app, "gmail_latest_messages", return_value={"messages": []}),
+            patch.object(app, "important_summary", return_value={"messages": []}),
+            patch.object(app, "refresh_google_access_token", return_value=("token", None)),
+            patch.object(app, "calendar_events", return_value=[]),
+            patch.object(app, "table", project_table),
+            patch.object(app, "approval_table", approval_table),
+        ):
+            result = app.chat("user-1", {"message": "daily briefing"})
+
+        body = json.loads(result["body"])
+        self.assertEqual(
+            body["briefing"]["attention_items"],
+            [
+                {
+                    "type": "unfinished_action",
+                    "title": "Send customer update",
+                    "reason": (
+                        "This approved action has not finished. Review it before "
+                        "taking any further action."
+                    ),
+                    "urgency": "high",
+                    "source": "approvals",
+                }
+            ],
+        )
+        self.assertIn("Needs your attention: Send customer update.", body["reply"])
+        self.assertNotIn("private provider failure details", str(body))
+
     def test_passes_fetch_errors_to_attention_builder(self):
         project_table = Mock()
         project_table.query.side_effect = RuntimeError("projects failed")
