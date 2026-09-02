@@ -1446,6 +1446,72 @@ def gmail_latest_messages(
     }
 
 
+def gmail_follow_up_messages(
+    user_id,
+    follow_up_days=3,
+):
+    """Fetch complete Gmail threads containing older sent-message candidates."""
+    if follow_up_days < 0:
+        raise ValueError("follow_up_days must not be negative")
+
+    access_token, _ = refresh_google_access_token(user_id)
+    thread_ids = set()
+    page_token = None
+
+    while True:
+        params = {
+            "maxResults": 100,
+            "q": f"in:sent older_than:{follow_up_days}d",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        listing = google_api_get(
+            GMAIL_BASE_URL + "/users/me/messages?" + urlencode(params),
+            access_token,
+        )
+        thread_ids.update(
+            str(item["threadId"])
+            for item in listing.get("messages", [])
+            if item.get("threadId")
+        )
+        page_token = listing.get("nextPageToken")
+        if not page_token:
+            break
+
+    messages = []
+    metadata_query = urlencode([
+        ("format", "metadata"),
+        ("metadataHeaders", "From"),
+        ("metadataHeaders", "Subject"),
+    ])
+
+    for thread_id in sorted(thread_ids):
+        thread = google_api_get(
+            GMAIL_BASE_URL
+            + "/users/me/threads/"
+            + quote(thread_id)
+            + "?"
+            + metadata_query,
+            access_token,
+        )
+        for msg in thread.get("messages", []):
+            headers = {
+                header.get("name", "").lower(): header.get("value", "")
+                for header in msg.get("payload", {}).get("headers", [])
+            }
+            messages.append({
+                "id": str(msg.get("id") or ""),
+                "threadId": str(msg.get("threadId") or thread_id),
+                "labelIds": list(msg.get("labelIds", [])),
+                "internalDate": msg.get("internalDate"),
+                "from": headers.get("from", ""),
+                "subject": headers.get("subject", "(no subject)"),
+            })
+
+    return {"messages": messages}
+
+
 def gmail_spoken_reply(
     result
 ):
@@ -2811,6 +2877,7 @@ def chat(
 
         briefing_parts = []
         gmail_metadata = []
+        gmail_follow_up_metadata = []
         approval_items = []
         source_errors = {}
         briefing_data = {
@@ -2871,6 +2938,12 @@ def chat(
                 "[BRIEFING EMAIL ERROR]",
                 str(exc),
             )
+
+        try:
+            follow_up_result = gmail_follow_up_messages(user_id)
+            gmail_follow_up_metadata = follow_up_result.get("messages", [])
+        except Exception as exc:
+            print("[BRIEFING FOLLOW-UP ERROR]", str(exc))
 
         # TODAY'S CALENDAR
         try:
@@ -3024,6 +3097,7 @@ def chat(
 
         attention_items = build_attention_items(
             gmail_metadata=gmail_metadata,
+            gmail_follow_up_metadata=gmail_follow_up_metadata,
             calendar_events=briefing_data["calendar"],
             project_next_actions=briefing_data["projects"],
             approval_items=approval_items,

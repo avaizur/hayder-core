@@ -18,6 +18,7 @@ class BuildAttentionItemsTests(unittest.TestCase):
     def build(self, **overrides):
         inputs = {
             "gmail_metadata": [],
+            "gmail_follow_up_metadata": [],
             "calendar_events": [],
             "project_next_actions": [],
             "approval_items": [],
@@ -65,19 +66,20 @@ class BuildAttentionItemsTests(unittest.TestCase):
         )
         self.assertEqual(items[0]["reason"], "From Alex <alex@example.com>.")
 
-    def test_does_not_include_follow_up_due_items(self):
+    def test_includes_follow_up_due_from_dedicated_thread_data(self):
         items = self.build(
-            gmail_metadata=[
+            gmail_follow_up_metadata=[
                 {
+                    "id": "sent-1",
                     "threadId": "waiting",
                     "subject": "Proposal",
-                    "date": "Mon, 24 Aug 2026 09:00:00 +0000",
+                    "internalDate": "1787562000000",
                     "labelIds": ["SENT"],
                 }
             ]
         )
 
-        self.assertEqual(items, [])
+        self.assertEqual([item["type"] for item in items], ["follow_up_due"])
 
     def test_marks_imminent_meetings_and_ignores_past_or_all_day_events(self):
         items = self.build(

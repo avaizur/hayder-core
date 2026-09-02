@@ -136,16 +136,21 @@ def detect_reply_due_items(gmail_messages, now, follow_up_days=3):
     for message in messages:
         thread_id = message.get("threadId")
         sent_at = _message_datetime(message)
-        if thread_id and sent_at is not None:
+        labels = _email_labels(message)
+        if (
+            thread_id
+            and sent_at is not None
+            and not labels & {"DRAFT", "SPAM", "TRASH"}
+        ):
             threads.setdefault(str(thread_id), []).append((sent_at, message))
 
     for thread_messages in threads.values():
-        thread_messages.sort(key=lambda entry: entry[0])
+        thread_messages.sort(key=lambda entry: (
+            entry[0], str(entry[1].get("id") or "")
+        ))
         sent_at, latest = thread_messages[-1]
         labels = _email_labels(latest)
         if "SENT" not in labels or sent_at >= cutoff:
-            continue
-        if labels & {"DRAFT", "SPAM", "TRASH"}:
             continue
         subject = latest.get("subject") or "(no subject)"
         items.append(_attention_item(
@@ -168,6 +173,7 @@ def build_attention_items(
     source_errors,
     now,
     imminent_minutes=120,
+    gmail_follow_up_metadata=None,
 ):
     """Build deterministic attention items from already-fetched data.
 
@@ -185,12 +191,18 @@ def build_attention_items(
 
     items = []
 
+    detected_reply_items = detect_reply_due_items(gmail_metadata, now)
     reply_due_items = [
         item
-        for item in detect_reply_due_items(gmail_metadata, now)
+        for item in detected_reply_items
         if item["type"] == "reply_due"
     ]
     items.extend(reply_due_items)
+    items.extend(
+        item
+        for item in detect_reply_due_items(gmail_follow_up_metadata, now)
+        if item["type"] == "follow_up_due"
+    )
     reply_due_counts = Counter(
         (item["title"], item["reason"])
         for item in reply_due_items

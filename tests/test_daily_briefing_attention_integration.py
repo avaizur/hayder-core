@@ -73,6 +73,7 @@ class DailyBriefingAttentionIntegrationTests(unittest.TestCase):
         with (
             patch.object(app, "resolve_intent", return_value={"intent": "daily_briefing"}),
             patch.object(app, "gmail_latest_messages", return_value={"messages": gmail_messages}),
+            patch.object(app, "gmail_follow_up_messages", return_value={"messages": []}),
             patch.object(app, "important_summary", return_value={"messages": []}),
             patch.object(app, "refresh_google_access_token", return_value=("token", None)),
             patch.object(app, "calendar_events", return_value=events),
@@ -111,6 +112,7 @@ class DailyBriefingAttentionIntegrationTests(unittest.TestCase):
         with (
             patch.object(app, "resolve_intent", return_value={"intent": "daily_briefing"}),
             patch.object(app, "gmail_latest_messages", return_value={"messages": []}),
+            patch.object(app, "gmail_follow_up_messages", return_value={"messages": []}),
             patch.object(app, "important_summary", return_value={"messages": []}),
             patch.object(app, "refresh_google_access_token", return_value=("token", None)),
             patch.object(app, "calendar_events", return_value=[]),
@@ -147,6 +149,7 @@ class DailyBriefingAttentionIntegrationTests(unittest.TestCase):
         with (
             patch.object(app, "resolve_intent", return_value={"intent": "daily_briefing"}),
             patch.object(app, "gmail_latest_messages", side_effect=RuntimeError("gmail failed")),
+            patch.object(app, "gmail_follow_up_messages", return_value={"messages": []}),
             patch.object(app, "refresh_google_access_token", side_effect=RuntimeError("calendar failed")),
             patch.object(app, "table", project_table),
             patch.object(app, "approval_table", approval_table),
