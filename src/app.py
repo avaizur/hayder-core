@@ -30,6 +30,7 @@ from calendar_tool import (
     event_minutes_from_now,
 )
 from attention_memory import configure, parse_preference_command, save_preference
+from commitment_memory import detect_commitment, open_commitments, save_commitment
 
 
 TABLE_NAME = os.environ["HAYDER_TABLE"]
@@ -2460,6 +2461,25 @@ def chat(
             },
         )
 
+    commitment = detect_commitment(message)
+
+    if commitment:
+        saved_commitment = save_commitment(table, user_id, commitment)
+
+        return response(
+            201,
+            {
+                "assistant": "Hayder",
+                "tool": "commitment_memory",
+                "commitment": saved_commitment,
+                "reply": (
+                    "I saved this open commitment: "
+                    + saved_commitment["commitment"]
+                    + ". No external action has been taken."
+                ),
+            },
+        )
+
     # ------------------------------------------------
     # PERSONAL ATTENTION LEARNING
     # ------------------------------------------------
@@ -2797,6 +2817,7 @@ def chat(
             "email": [],
             "calendar": [],
             "projects": [],
+            "commitments": [],
             "attention_items": [],
         }
 
@@ -2954,6 +2975,22 @@ def chat(
 
             print(
                 "[BRIEFING PROJECT ERROR]",
+                str(exc),
+            )
+
+        # OPEN COMMITMENTS
+        try:
+            briefing_data["commitments"] = open_commitments(
+                table,
+                user_id,
+            )
+
+        except Exception as exc:
+            source_errors["commitments"] = (
+                "Commitments could not be loaded"
+            )
+            print(
+                "[BRIEFING COMMITMENT ERROR]",
                 str(exc),
             )
 
@@ -3122,6 +3159,17 @@ def chat(
                     )
                     + ": "
                     + next_action
+                )
+
+        for commitment in briefing_data[
+            "commitments"
+        ]:
+            commitment_text = commitment.get(
+                "commitment"
+            )
+            if commitment_text:
+                later_items.append(
+                    "Commitment: " + commitment_text
                 )
 
         parts = [

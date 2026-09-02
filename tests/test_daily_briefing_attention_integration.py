@@ -161,6 +161,7 @@ class DailyBriefingAttentionIntegrationTests(unittest.TestCase):
                 "gmail": "Gmail data could not be loaded",
                 "calendar": "Calendar data could not be loaded",
                 "projects": "Project data could not be loaded",
+                "commitments": "Commitments could not be loaded",
                 "approvals": "Approvals could not be loaded",
             },
         )
