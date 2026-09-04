@@ -100,6 +100,7 @@ Resources:
               Action:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
+                - dynamodb:Query
                 - dynamodb:UpdateItem
               Resource: !GetAtt HayderApprovalTable.Arn
 
