@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -75,6 +76,34 @@ GOOGLE_TOKEN_URL = (
 GMAIL_BASE_URL = (
     "https://gmail.googleapis.com/gmail/v1"
 )
+
+GOOGLE_DISCONNECTED_MESSAGE = (
+    "Your Google account is not connected yet. "
+    "Please connect your Google account."
+)
+
+GOOGLE_RECONNECT_MESSAGE = (
+    "Your Google account connection has expired or was revoked. "
+    "Please reconnect your Google account."
+)
+
+
+def is_google_auth_error(exc):
+    err_msg = str(exc)
+    return any(
+        needle in err_msg
+        for needle in (
+            "invalid_grant",
+            "GOOGLE_REFRESH_FAILED",
+            "GOOGLE_AUTH_EXPIRED",
+            "auth error",
+            "Google returned HTTP 400",
+            "HTTP 401",
+            "HTTP 403",
+            "HTTP Error 401",
+            "HTTP Error 403",
+        )
+    )
 
 
 dynamodb = boto3.resource("dynamodb")
@@ -247,6 +276,10 @@ def get_api_origin(event):
             "domainName"
         )
     )
+
+    if not domain:
+        headers = event.get("headers") or {}
+        domain = headers.get("x-forwarded-host") or headers.get("host")
 
     if not domain:
         raise RuntimeError(
@@ -971,6 +1004,34 @@ def google_callback(
     event
 ):
 
+    headers = event.get("headers") or {}
+    accept = (headers.get("accept") or headers.get("Accept") or "").lower()
+    is_browser = "text/html" in accept
+
+    def error_result(status_code, safe_message):
+        if is_browser:
+            html_body = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hayder Google Connection</title>
+</head>
+<body style="font-family:Arial;max-width:700px;margin:60px auto;padding:20px;">
+<h1>⚠️ Google connection failed</h1>
+<p>{html.escape(safe_message)}</p>
+<p><a href="/voice">Return to Hayder Voice</a></p>
+</body>
+</html>"""
+            return response(
+                status_code,
+                html_body,
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
+        return response(
+            status_code,
+            {"error": safe_message},
+        )
+
     query = (
         event.get(
             "queryStringParameters"
@@ -979,29 +1040,27 @@ def google_callback(
     )
 
     if query.get("error"):
-
-        return response(
+        oauth_error = query.get("error")
+        if oauth_error == "access_denied":
+            return error_result(
+                400,
+                "Google connection was cancelled or denied. "
+                "Please reconnect when you are ready to authorize Hayder.",
+            )
+        return error_result(
             400,
-            {
-                "error":
-                    query.get(
-                        "error"
-                    )
-            },
+            "Google authorization failed. "
+            "Please return to Hayder and try connecting again.",
         )
 
     code = query.get("code")
     state = query.get("state")
 
     if not code or not state:
-
-        return response(
+        return error_result(
             400,
-            {
-                "error":
-                    "Missing OAuth code "
-                    "or state"
-            },
+            "Missing OAuth code or state. "
+            "Please return to Hayder and try connecting again.",
         )
 
     user_id = verify_google_state(
@@ -1009,99 +1068,98 @@ def google_callback(
     )
 
     if not user_id:
-
-        return response(
+        return error_result(
             400,
+            "Your connection session has expired or is invalid. "
+            "Please return to Hayder and try connecting again.",
+        )
+
+    try:
+        client_id, client_secret = (
+            get_google_credentials()
+        )
+
+        token_data = post_form(
+            GOOGLE_TOKEN_URL,
             {
-                "error":
-                    "Invalid or expired "
-                    "OAuth state"
+                "code":
+                    code,
+                "client_id":
+                    client_id,
+                "client_secret":
+                    client_secret,
+                "redirect_uri":
+                    google_redirect_uri(
+                        event
+                    ),
+                "grant_type":
+                    "authorization_code",
             },
         )
 
-    client_id, client_secret = (
-        get_google_credentials()
-    )
-
-    token_data = post_form(
-        GOOGLE_TOKEN_URL,
-        {
-            "code":
-                code,
-            "client_id":
-                client_id,
-            "client_secret":
-                client_secret,
-            "redirect_uri":
-                google_redirect_uri(
-                    event
-                ),
-            "grant_type":
-                "authorization_code",
-        },
-    )
-
-    access_token = (
-        token_data.get(
-            "access_token"
+        access_token = (
+            token_data.get(
+                "access_token"
+            )
         )
-    )
 
-    refresh_token = (
-        token_data.get(
-            "refresh_token"
+        refresh_token = (
+            token_data.get(
+                "refresh_token"
+            )
         )
-    )
 
-    if not access_token:
+        if not access_token:
+            return error_result(
+                502,
+                "Google did not return an access token. "
+                "Please return to Hayder and try connecting again.",
+            )
 
-        return response(
+        if not refresh_token:
+            return error_result(
+                400,
+                "Google did not return a refresh token. "
+                "Please reconnect and approve consent again.",
+            )
+
+        profile = google_api_get(
+            GMAIL_BASE_URL
+            + "/users/me/profile",
+            access_token,
+        )
+
+        gmail_email = (
+            profile.get(
+                "emailAddress"
+            )
+            or "unknown"
+        )
+
+        store_google_refresh_token(
+            user_id,
+            refresh_token,
+            gmail_email,
+        )
+
+    except Exception as exc:
+        print(
+            "[GOOGLE CALLBACK ERROR]",
+            str(exc),
+        )
+        return error_result(
             502,
-            {
-                "error":
-                    "Google did not "
-                    "return an access token"
-            },
+            "Google connection failed. "
+            "Please return to Hayder and try connecting again.",
         )
 
-    if not refresh_token:
-
-        return response(
-            400,
-            {
-                "error":
-                    "Google did not return "
-                    "a refresh token. "
-                    "Reconnect and approve "
-                    "consent again."
-            },
-        )
-
-    profile = google_api_get(
-        GMAIL_BASE_URL
-        + "/users/me/profile",
-        access_token,
-    )
-
-    gmail_email = (
-        profile.get(
-            "emailAddress"
-        )
-        or "unknown"
-    )
-
-    store_google_refresh_token(
-        user_id,
-        refresh_token,
-        gmail_email,
-    )
-
-    html = f"""
+    safe_email = html.escape(gmail_email)
+    html_body = f"""
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Hayder Gmail Connected</title>
+<title>Hayder Google Account Connected</title>
 </head>
 
 <body style="
@@ -1111,11 +1169,11 @@ margin:60px auto;
 padding:20px;
 ">
 
-<h1>✅ Gmail connected to Hayder</h1>
+<h1>✅ Google account connected to Hayder</h1>
 
 <p>
-Connected Gmail account:
-<strong>{gmail_email}</strong>
+Connected Google account:
+<strong>{safe_email}</strong>
 </p>
 
 <p>
@@ -1137,6 +1195,10 @@ and say:
 <h2>
 “Hayder, read my latest 5 emails.”
 </h2>
+<p>or</p>
+<h2>
+“Hayder, what's on my calendar today?”
+</h2>
 
 <a href="/voice">
 Return to Hayder Voice
@@ -1148,7 +1210,7 @@ Return to Hayder Voice
 
     return response(
         200,
-        html,
+        html_body,
         headers={
             "content-type":
                 "text/html; charset=utf-8"
@@ -3604,8 +3666,23 @@ def chat(
                         "intent":
                             resolved,
                         "reply":
-                            "Gmail is not connected "
-                            "to this Hayder account yet."
+                            GOOGLE_DISCONNECTED_MESSAGE,
+                    },
+                )
+
+            if is_google_auth_error(exc):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "gmail_connected":
+                            False,
+                        "intent":
+                            resolved,
+                        "reply":
+                            GOOGLE_RECONNECT_MESSAGE,
                     },
                 )
 
@@ -3626,6 +3703,22 @@ def chat(
             )
 
         except Exception as exc:
+
+            if is_google_auth_error(exc):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "gmail_connected":
+                            False,
+                        "intent":
+                            resolved,
+                        "reply":
+                            GOOGLE_RECONNECT_MESSAGE,
+                    },
+                )
 
             print(
                 "[ATTENTION ENGINE ERROR]",
@@ -3702,19 +3795,11 @@ def chat(
                         "assistant":
                             "Hayder",
                         "reply":
-                            "Your Google account is not connected yet."
+                            GOOGLE_DISCONNECTED_MESSAGE,
                     },
                 )
 
-            if (
-                "invalid_grant" in err_msg
-                or "GOOGLE_REFRESH_FAILED" in err_msg
-                or "GOOGLE_AUTH_EXPIRED" in err_msg
-                or "auth error" in err_msg
-                or "HTTP 400" in err_msg
-                or "HTTP 401" in err_msg
-                or "HTTP 403" in err_msg
-            ):
+            if is_google_auth_error(exc):
 
                 return response(
                     409,
@@ -3722,7 +3807,7 @@ def chat(
                         "assistant":
                             "Hayder",
                         "reply":
-                            "Your Google account connection has expired or was revoked. Please reconnect your Google account."
+                            GOOGLE_RECONNECT_MESSAGE,
                     },
                 )
 
@@ -3743,12 +3828,7 @@ def chat(
 
         except Exception as exc:
 
-            err_msg = str(exc)
-
-            if (
-                "HTTP Error 401" in err_msg
-                or "HTTP Error 403" in err_msg
-            ):
+            if is_google_auth_error(exc):
 
                 return response(
                     409,
@@ -3756,7 +3836,7 @@ def chat(
                         "assistant":
                             "Hayder",
                         "reply":
-                            "Your Google account connection has expired or was revoked. Please reconnect your Google account."
+                            GOOGLE_RECONNECT_MESSAGE,
                     },
                 )
 
@@ -3825,8 +3905,23 @@ def chat(
                         "intent":
                             resolved,
                         "reply":
-                            "Gmail is not connected "
-                            "to this Hayder account yet."
+                            GOOGLE_DISCONNECTED_MESSAGE,
+                    },
+                )
+
+            if is_google_auth_error(exc):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "gmail_connected":
+                            False,
+                        "intent":
+                            resolved,
+                        "reply":
+                            GOOGLE_RECONNECT_MESSAGE,
                     },
                 )
 
@@ -3846,6 +3941,22 @@ def chat(
             )
 
         except Exception as exc:
+
+            if is_google_auth_error(exc):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "gmail_connected":
+                            False,
+                        "intent":
+                            resolved,
+                        "reply":
+                            GOOGLE_RECONNECT_MESSAGE,
+                    },
+                )
 
             print(
                 "[GMAIL READ ERROR]",
@@ -4130,11 +4241,35 @@ def lambda_handler(
                 str(exc),
             )
 
+            safe_msg = (
+                "Google connection failed. "
+                "Please return to Hayder and try connecting again."
+            )
+            headers = event.get("headers") or {}
+            accept = (headers.get("accept") or headers.get("Accept") or "").lower()
+            if "text/html" in accept:
+                html_body = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hayder Google Connection</title>
+</head>
+<body style="font-family:Arial;max-width:700px;margin:60px auto;padding:20px;">
+<h1>⚠️ Google connection failed</h1>
+<p>{html.escape(safe_msg)}</p>
+<p><a href="/voice">Return to Hayder Voice</a></p>
+</body>
+</html>"""
+                return response(
+                    500,
+                    html_body,
+                    headers={"content-type": "text/html; charset=utf-8"},
+                )
+
             return response(
                 500,
                 {
-                    "error":
-                        "Google connection failed"
+                    "error": safe_msg
                 },
             )
 
@@ -4165,10 +4300,23 @@ def lambda_handler(
         == "/oauth/google/connect"
     ):
 
-        return google_connect(
-            event,
-            user_id,
-        )
+        try:
+            return google_connect(
+                event,
+                user_id,
+            )
+        except Exception as exc:
+            print(
+                "[GOOGLE CONNECT ERROR]",
+                str(exc),
+            )
+            return response(
+                502,
+                {
+                    "assistant": "Hayder",
+                    "error": "Google connection could not be initiated. Please try again.",
+                },
+            )
 
     # PROJECT MEMORY
 

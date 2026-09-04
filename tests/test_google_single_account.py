@@ -54,7 +54,11 @@ class FakeSecretsClient:
 class FakeBoto3:
     def resource(self, service):
         return SimpleNamespace(
-            Table=lambda name: SimpleNamespace(name=name),
+            Table=lambda name: SimpleNamespace(
+                name=name,
+                get_item=lambda **kwargs: {},
+                put_item=lambda **kwargs: None,
+            ),
         )
 
     def client(self, service):
@@ -146,6 +150,166 @@ class GoogleSingleAccountTests(unittest.TestCase):
         self.assertNotIn("HAYDER_GOOGLE_LIMIT_", template)
         self.assertNotIn("/google/accounts", template)
         self.assertNotIn("/account/plan", template)
+
+    def test_disconnected_google_user_facing_messages(self):
+        with patch.object(app, "load_google_connection", return_value=None):
+            # 1. Gmail read-only
+            gmail_res = app.chat("user-1", {"message": "read my latest emails"})
+            self.assertEqual(gmail_res["statusCode"], 409)
+            gmail_body = json.loads(gmail_res["body"])
+            self.assertEqual(gmail_body["reply"], app.GOOGLE_DISCONNECTED_MESSAGE)
+            self.assertNotIn("to this Hayder account", gmail_body["reply"])
+
+            # 2. Calendar read-only
+            cal_res = app.chat("user-1", {"message": "what is on my calendar today"})
+            self.assertEqual(cal_res["statusCode"], 409)
+            cal_body = json.loads(cal_res["body"])
+            self.assertEqual(cal_body["reply"], app.GOOGLE_DISCONNECTED_MESSAGE)
+
+            # 3. Attention inbox
+            att_res = app.chat("user-1", {"message": "what is important in my inbox"})
+            self.assertEqual(att_res["statusCode"], 409)
+            att_body = json.loads(att_res["body"])
+            self.assertEqual(att_body["reply"], app.GOOGLE_DISCONNECTED_MESSAGE)
+            self.assertNotIn("to this Hayder account", att_body["reply"])
+
+    def test_expired_or_revoked_google_auth_gives_single_reconnect_instruction(self):
+        auth_error = RuntimeError("Google returned HTTP 400")
+
+        with patch.object(app, "refresh_google_access_token", side_effect=auth_error):
+            # 1. Gmail read-only
+            gmail_res = app.chat("user-1", {"message": "read my latest emails"})
+            self.assertEqual(gmail_res["statusCode"], 409)
+            gmail_body = json.loads(gmail_res["body"])
+            self.assertEqual(gmail_body["reply"], app.GOOGLE_RECONNECT_MESSAGE)
+
+            # 2. Calendar read-only
+            cal_res = app.chat("user-1", {"message": "what is on my calendar today"})
+            self.assertEqual(cal_res["statusCode"], 409)
+            cal_body = json.loads(cal_res["body"])
+            self.assertEqual(cal_body["reply"], app.GOOGLE_RECONNECT_MESSAGE)
+
+            # 3. Attention inbox
+            att_res = app.chat("user-1", {"message": "what is important in my inbox"})
+            self.assertEqual(att_res["statusCode"], 409)
+            att_body = json.loads(att_res["body"])
+            self.assertEqual(att_body["reply"], app.GOOGLE_RECONNECT_MESSAGE)
+
+    def test_failed_oauth_callback_safe_responses(self):
+        # 1. User denied/cancelled in browser
+        browser_event = {
+            "queryStringParameters": {"error": "access_denied"},
+            "headers": {"accept": "text/html,application/xhtml+xml"},
+        }
+        res = app.google_callback(browser_event)
+        self.assertEqual(res["statusCode"], 400)
+        self.assertIn("text/html", res["headers"]["content-type"])
+        self.assertIn("Google connection was cancelled or denied", res["body"])
+        self.assertIn("/voice", res["body"])
+        self.assertNotIn("access_denied", res["body"])
+
+        # 2. User denied/cancelled via JSON client
+        json_event = {
+            "queryStringParameters": {"error": "access_denied"},
+            "headers": {"accept": "application/json"},
+        }
+        res_json = app.google_callback(json_event)
+        self.assertEqual(res_json["statusCode"], 400)
+        body = json.loads(res_json["body"])
+        self.assertIn("Google connection was cancelled or denied", body["error"])
+
+        # 3. Missing code or state
+        res_missing = app.google_callback({"queryStringParameters": {}})
+        self.assertEqual(res_missing["statusCode"], 400)
+        self.assertIn("Missing OAuth code or state", json.loads(res_missing["body"])["error"])
+
+        # 4. Invalid or expired state
+        with patch.object(app, "verify_google_state", return_value=None):
+            res_invalid_state = app.google_callback(
+                {"queryStringParameters": {"code": "dummy-code", "state": "expired-state"}}
+            )
+            self.assertEqual(res_invalid_state["statusCode"], 400)
+            self.assertIn("expired or is invalid", json.loads(res_invalid_state["body"])["error"])
+
+        # 5. Missing refresh token from Google
+        with (
+            patch.object(app, "verify_google_state", return_value="user-1"),
+            patch.object(app, "get_google_credentials", return_value=("id", "secret")),
+            patch.object(app, "post_form", return_value={"access_token": "acc"}),
+            patch.object(app, "google_redirect_uri", return_value="https://example.com/oauth/google/callback"),
+        ):
+            res_no_refresh = app.google_callback(
+                {"queryStringParameters": {"code": "dummy-code", "state": "valid-state"}}
+            )
+            self.assertEqual(res_no_refresh["statusCode"], 400)
+            self.assertIn("did not return a refresh token", json.loads(res_no_refresh["body"])["error"])
+
+        # 6. Upstream network/HTTP error during token exchange
+        with (
+            patch.object(app, "verify_google_state", return_value="user-1"),
+            patch.object(app, "get_google_credentials", return_value=("id", "secret")),
+            patch.object(app, "post_form", side_effect=RuntimeError("Connection reset")),
+            patch.object(app, "google_redirect_uri", return_value="https://example.com/oauth/google/callback"),
+        ):
+            res_upstream_err = app.google_callback(
+                {"queryStringParameters": {"code": "dummy-code", "state": "valid-state"}}
+            )
+            self.assertEqual(res_upstream_err["statusCode"], 502)
+            self.assertEqual(
+                json.loads(res_upstream_err["body"])["error"],
+                "Google connection failed. Please return to Hayder and try connecting again.",
+            )
+            self.assertNotIn("Connection reset", res_upstream_err["body"])
+
+    def test_successful_oauth_callback_response(self):
+        secrets = FakeSecretsClient()
+        with (
+            patch.object(app, "verify_google_state", return_value="user-1"),
+            patch.object(app, "get_google_credentials", return_value=("id", "secret")),
+            patch.object(
+                app,
+                "post_form",
+                return_value={"access_token": "acc", "refresh_token": "ref"},
+            ),
+            patch.object(
+                app,
+                "google_api_get",
+                return_value={"emailAddress": "founder@example.com"},
+            ),
+            patch.object(app, "google_redirect_uri", return_value="https://example.com/oauth/google/callback"),
+            patch.object(app, "secrets_client", secrets),
+        ):
+            event = {
+                "queryStringParameters": {"code": "auth-code", "state": "valid-state"},
+                "headers": {"accept": "text/html"},
+            }
+            res = app.google_callback(event)
+
+        self.assertEqual(res["statusCode"], 200)
+        self.assertIn("text/html", res["headers"]["content-type"])
+        self.assertIn("Google account connected to Hayder", res["body"])
+        self.assertIn("founder@example.com", res["body"])
+        self.assertIn("Read email, send approved email, and read Calendar events", res["body"])
+        self.assertIn("what's on my calendar today", res["body"])
+        self.assertIn("/voice", res["body"])
+
+    def test_google_connect_origin_from_headers(self):
+        event = {
+            "headers": {"host": "voice.hayder.ai"},
+        }
+        with (
+            patch.object(app, "get_google_credentials", return_value=("client", "secret")),
+            patch.object(app, "create_google_state", return_value="signed-state"),
+        ):
+            result = app.google_connect(event, "hayder-user")
+
+        self.assertEqual(result["statusCode"], 200)
+        body = json.loads(result["body"])
+        query = parse_qs(urlparse(body["authorization_url"]).query)
+        self.assertEqual(
+            query["redirect_uri"],
+            ["https://voice.hayder.ai/oauth/google/callback"],
+        )
 
 
 if __name__ == "__main__":
