@@ -93,6 +93,7 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
                 - dynamodb:Query
+                - dynamodb:UpdateItem
               Resource: !GetAtt HayderMemoryTable.Arn
 
             - Effect: Allow

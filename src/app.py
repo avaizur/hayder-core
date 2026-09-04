@@ -556,10 +556,16 @@ def create_google_state(
         get_google_credentials()
     )
 
+    now = int(time.time())
+    nonce = uuid.uuid4().hex
+    nonce_hash = hashlib.sha256(
+        nonce.encode("utf-8")
+    ).hexdigest()
+
     payload = {
         "u": user_id,
-        "t": int(time.time()),
-        "n": uuid.uuid4().hex,
+        "t": now,
+        "n": nonce,
     }
 
     payload_bytes = json.dumps(
@@ -580,6 +586,17 @@ def create_google_state(
         ),
         hashlib.sha256,
     ).digest()
+
+    table.put_item(
+        Item={
+            "user_id": user_id,
+            "record_key": (
+                f"OAUTH_STATE#{nonce_hash}"
+            ),
+            "nonce_hash": nonce_hash,
+            "created_at": now_iso(),
+        }
+    )
 
     return (
         encoded
@@ -632,18 +649,64 @@ def verify_google_state(
             ).decode("utf-8")
         )
 
+        user_id = payload.get("u")
         timestamp = int(
             payload.get("t", 0)
         )
+        nonce = payload.get("n")
 
         if (
-            int(time.time())
-            - timestamp
+            not user_id
+            or not isinstance(user_id, str)
+            or not nonce
+            or not isinstance(nonce, str)
+        ):
+            return None
+
+        now = int(time.time())
+
+        # 10-minute expiry
+        if (
+            now - timestamp
             > 600
         ):
             return None
 
-        return payload.get("u")
+        # Reject materially future timestamps (> 60s skew)
+        if (
+            timestamp - now
+            > 60
+        ):
+            return None
+
+        nonce_hash = hashlib.sha256(
+            nonce.encode("utf-8")
+        ).hexdigest()
+
+        table.update_item(
+            Key={
+                "user_id": user_id,
+                "record_key": (
+                    f"OAUTH_STATE#{nonce_hash}"
+                ),
+            },
+            UpdateExpression=(
+                "SET #consumed_at = :now"
+            ),
+            ConditionExpression=(
+                "attribute_exists(#rk) "
+                "AND attribute_not_exists(#consumed_at)"
+            ),
+            ExpressionAttributeNames={
+                "#rk": "record_key",
+                "#consumed_at": "consumed_at",
+            },
+            ExpressionAttributeValues={
+                ":now": now_iso(),
+            },
+        )
+
+        return user_id
 
     except Exception:
 
