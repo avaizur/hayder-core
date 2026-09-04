@@ -1,4 +1,5 @@
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,11 @@ def google_calendar_get(
     url,
     access_token,
 ):
+    if not access_token:
+        raise RuntimeError(
+            "GOOGLE_AUTH_EXPIRED"
+        )
+
     request = urllib.request.Request(
         url,
         headers={
@@ -25,14 +31,48 @@ def google_calendar_get(
         method="GET",
     )
 
-    with urllib.request.urlopen(
-        request,
-        timeout=15,
-    ) as response:
-        return json.loads(
-            response
-            .read()
-            .decode("utf-8")
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=15,
+        ) as response:
+            return json.loads(
+                response
+                .read()
+                .decode("utf-8")
+            )
+
+    except urllib.error.HTTPError as exc:
+        error_body = (
+            exc.read()
+            .decode(
+                "utf-8",
+                errors="replace",
+            )
+        )
+
+        print(
+            "[CALENDAR HTTP ERROR]",
+            exc.code,
+            error_body,
+        )
+
+        if exc.code in (401, 403):
+            raise RuntimeError(
+                f"Google Calendar auth error: HTTP {exc.code}"
+            )
+
+        raise RuntimeError(
+            f"Calendar returned HTTP {exc.code}"
+        )
+
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(
+            "[CALENDAR NETWORK ERROR]",
+            str(exc),
+        )
+        raise RuntimeError(
+            "Calendar service unavailable"
         )
 
 
@@ -104,20 +144,29 @@ def calendar_events(
         access_token,
     )
 
+    if not isinstance(data, dict):
+        return []
+
     events = []
 
     for item in data.get(
         "items",
         [],
     ):
-        start_data = item.get(
-            "start",
-            {},
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("status") == "cancelled":
+            continue
+
+        start_data = (
+            item.get("start")
+            or {}
         )
 
-        end_data = item.get(
-            "end",
-            {},
+        end_data = (
+            item.get("end")
+            or {}
         )
 
         events.append(
@@ -126,9 +175,9 @@ def calendar_events(
                     item.get("id"),
 
                 "summary":
-                    item.get(
-                        "summary",
-                        "Untitled event",
+                    (
+                        item.get("summary")
+                        or "Untitled event"
                     ),
 
                 "start":
@@ -154,15 +203,15 @@ def calendar_events(
                     ),
 
                 "location":
-                    item.get(
-                        "location",
-                        "",
+                    (
+                        item.get("location")
+                        or ""
                     ),
 
                 "status":
-                    item.get(
-                        "status",
-                        "",
+                    (
+                        item.get("status")
+                        or ""
                     ),
             }
         )
@@ -171,7 +220,7 @@ def calendar_events(
 
 
 def event_time_text(value):
-    if not value:
+    if not value or not isinstance(value, str):
         return ""
 
     if "T" not in value:
@@ -204,7 +253,7 @@ def event_minutes_from_now(value):
     Returns None for all-day or invalid values.
     """
 
-    if not value or "T" not in value:
+    if not value or not isinstance(value, str) or "T" not in value:
         return None
 
     try:
@@ -245,7 +294,7 @@ def spoken_calendar_summary(
         else "today"
     )
 
-    if not events:
+    if not events or not isinstance(events, list):
         return (
             f"Your calendar is clear "
             f"{label}."

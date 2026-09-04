@@ -3271,7 +3271,7 @@ def chat(
                     }
                 )
 
-        else:
+        elif not source_errors.get("calendar"):
 
             today_items.append(
                 "Calendar is clear today"
@@ -3371,9 +3371,11 @@ def chat(
 
         for event in briefing_data["calendar"]:
 
-            summary_raw = event.get(
-                "summary",
-                "Calendar event",
+            summary_raw = (
+                event.get(
+                    "summary"
+                )
+                or "Calendar event"
             )
 
             summary = summary_raw.lower()
@@ -3690,7 +3692,9 @@ def chat(
 
         except RuntimeError as exc:
 
-            if str(exc) == "GMAIL_NOT_CONNECTED":
+            err_msg = str(exc)
+
+            if err_msg == "GMAIL_NOT_CONNECTED":
 
                 return response(
                     409,
@@ -3699,6 +3703,26 @@ def chat(
                             "Hayder",
                         "reply":
                             "Your Google account is not connected yet."
+                    },
+                )
+
+            if (
+                "invalid_grant" in err_msg
+                or "GOOGLE_REFRESH_FAILED" in err_msg
+                or "GOOGLE_AUTH_EXPIRED" in err_msg
+                or "auth error" in err_msg
+                or "HTTP 400" in err_msg
+                or "HTTP 401" in err_msg
+                or "HTTP 403" in err_msg
+            ):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "reply":
+                            "Your Google account connection has expired or was revoked. Please reconnect your Google account."
                     },
                 )
 
@@ -3718,6 +3742,23 @@ def chat(
             )
 
         except Exception as exc:
+
+            err_msg = str(exc)
+
+            if (
+                "HTTP Error 401" in err_msg
+                or "HTTP Error 403" in err_msg
+            ):
+
+                return response(
+                    409,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "reply":
+                            "Your Google account connection has expired or was revoked. Please reconnect your Google account."
+                    },
+                )
 
             print(
                 "[CALENDAR ERROR]",
