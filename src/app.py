@@ -2797,6 +2797,14 @@ def chat(
             },
         )
 
+    if isinstance(message, str):
+        message = re.sub(
+            r"\bdraught\s+(an?\s+)?email\b",
+            r"draft \1email",
+            message,
+            flags=re.IGNORECASE,
+        )
+
     commitment = detect_commitment(message)
 
     if commitment:
