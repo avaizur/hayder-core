@@ -1,6 +1,8 @@
 import importlib
 import json
 import os
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -35,6 +37,7 @@ class FakeBoto3:
 sys.modules.setdefault("boto3", FakeBoto3())
 app = importlib.import_module("app")
 intent_mod = importlib.import_module("intent")
+voice = importlib.import_module("voice")
 
 
 class Phase1VoiceChatRoutingTests(unittest.TestCase):
@@ -377,6 +380,115 @@ class Phase1VoiceChatRoutingTests(unittest.TestCase):
         self.assertEqual(result["statusCode"], 200)
         body = json.loads(result["body"])
         self.assertEqual(body.get("reply"), "I have nothing to approve.")
+
+    def test_voice_send_to_hayder_speaks_non_2xx_reply_and_ignores_raw_errors(self):
+        """Voice UI regression: sendToHayder displays and speaks non-empty reply on non-2xx (e.g. 409), but does not speak raw internal errors."""
+        res = voice.lambda_handler({}, {})
+        self.assertEqual(res["statusCode"], 200)
+        self.assertIn("text/html", res["headers"]["content-type"])
+        html = res["body"]
+        self.assertIn("async function sendToHayder(message)", html)
+
+        start = html.find("async function sendToHayder(")
+        end = html.find("loginButton.addEventListener", start)
+        self.assertNotEqual(start, -1)
+        self.assertNotEqual(end, -1)
+        fn_code = html[start:end].strip()
+
+        self.assertIn("!response.ok", fn_code)
+        self.assertIn("data.reply", fn_code)
+
+        node_path = shutil.which("node")
+        if not node_path:
+            return
+
+        test_js = f"""
+let core, statusBox, replyBox, spoken;
+function reset() {{
+    core = {{ className: "" }};
+    statusBox = {{ textContent: "" }};
+    replyBox = {{ textContent: "" }};
+    spoken = [];
+}}
+function speak(text) {{ spoken.push(text); }}
+async function getValidIdToken() {{ return "fake-token"; }}
+async function refreshSession() {{ return false; }}
+function clearSession() {{}}
+function showLogin() {{}}
+
+{fn_code}
+
+async function run() {{
+    // 1. 409 with non-empty user-facing reply must be displayed and spoken
+    reset();
+    global.fetch = async () => ({{
+        status: 409,
+        ok: false,
+        json: async () => ({{
+            reply: "Your Google account is not connected. Say Connect my Google account to get started.",
+            error: "Google account not connected"
+        }})
+    }});
+    await sendToHayder("read my latest emails");
+    if (!replyBox.textContent.includes("Your Google account is not connected")) {{
+        throw new Error("409 reply was not displayed in replyBox");
+    }}
+    if (spoken.length !== 1 || !spoken[0].includes("Your Google account is not connected")) {{
+        throw new Error("409 reply was not spoken: " + JSON.stringify(spoken));
+    }}
+    if (statusBox.textContent !== "Hayder replied") {{
+        throw new Error("unexpected statusBox: " + statusBox.textContent);
+    }}
+
+    // 2. 500 without user-facing reply must NOT be spoken
+    reset();
+    global.fetch = async () => ({{
+        status: 500,
+        ok: false,
+        json: async () => ({{
+            error: "Internal database timeout"
+        }})
+    }});
+    await sendToHayder("read my latest emails");
+    if (spoken.length !== 0) {{
+        throw new Error("raw internal error was spoken: " + JSON.stringify(spoken));
+    }}
+    if (replyBox.textContent !== "") {{
+        throw new Error("raw internal error was displayed in replyBox");
+    }}
+    if (statusBox.textContent !== "Internal database timeout") {{
+        throw new Error("unexpected statusBox: " + statusBox.textContent);
+    }}
+
+    // 3. 200 OK standard reply preserved
+    reset();
+    global.fetch = async () => ({{
+        status: 200,
+        ok: true,
+        json: async () => ({{
+            reply: "Here are your emails.",
+            tool: "gmail_readonly"
+        }})
+    }});
+    await sendToHayder("read my latest emails");
+    if (!replyBox.textContent.includes("Here are your emails.")) {{
+        throw new Error("200 reply was not displayed");
+    }}
+    if (spoken.length !== 1 || spoken[0] !== "Here are your emails.") {{
+        throw new Error("200 reply was not spoken");
+    }}
+    if (statusBox.textContent !== "Tool: gmail_readonly") {{
+        throw new Error("unexpected statusBox for 200: " + statusBox.textContent);
+    }}
+}}
+run().then(() => console.log("OK")).catch((err) => {{
+    console.error(err);
+    process.exit(1);
+}});
+"""
+        proc = subprocess.run([node_path, "-e", test_js], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, msg=f"JS test failed:\nstdout: {proc.stdout}\nstderr: {proc.stderr}")
+        self.assertIn("OK", proc.stdout)
 
 
 if __name__ == "__main__":

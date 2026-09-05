@@ -702,11 +702,20 @@ async function sendToHayder(message) {
 
         if (!response.ok) {
 
-            throw new Error(
-                data.reply
-                || data.error
-                || "Hayder request failed."
-            );
+            const hasReply =
+                Boolean(
+                    data
+                    && typeof data.reply === "string"
+                    && data.reply.trim()
+                );
+
+            if (!hasReply) {
+
+                throw new Error(
+                    (data && data.error)
+                    || "Hayder request failed."
+                );
+            }
         }
 
 
