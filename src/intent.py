@@ -38,6 +38,7 @@ ALLOWED_READ_INTENTS = {
     "project_continue",
     "calendar_readonly",
     "daily_briefing",
+    "google_connect",
     "general_chat",
 }
 
@@ -51,6 +52,8 @@ BLOCKED_WRITE_PHRASES = [
     "send email",
     "send the email",
     "send message",
+    "draft an email",
+    "draft email",
     "delete",
     "destroy",
     "terminate",
@@ -323,6 +326,40 @@ def heuristic_intent(message):
                 "heuristic",
         }
 
+    # Google connect / onboarding
+
+    google_connect_phrases = [
+        "connect my google account",
+        "connect google account",
+        "connect my google",
+        "connect google",
+        "connect my gmail",
+        "connect gmail",
+        "connect calendar",
+        "connect my calendar",
+        "link my google account",
+        "link google account",
+    ]
+
+    if (
+        any(
+            phrase in text
+            for phrase in google_connect_phrases
+        )
+        or (
+            ("connect" in text or "link" in text)
+            and "google" in text
+        )
+    ):
+        return {
+            "intent":
+                "google_connect",
+            "confidence":
+                0.95,
+            "source":
+                "heuristic",
+        }
+
     # Unified daily attention briefing
 
     briefing_phrases = [
@@ -510,6 +547,8 @@ gmail_readonly
 aws_readonly
 calendar_readonly
 project_continue
+daily_briefing
+google_connect
 general_chat
 
 Definitions:
@@ -529,6 +568,14 @@ appointments, interviews, or events.
 project_continue:
 The user wants to resume, continue, recall, or pick up work
 on an existing project.
+
+daily_briefing:
+The user wants their daily briefing, what needs attention,
+what to focus on, or important daily priorities.
+
+google_connect:
+The user wants to connect, link, authenticate, or onboard their
+Google account, Gmail, or Calendar.
 
 general_chat:
 Everything else.
@@ -766,6 +813,8 @@ def resolve_intent(
             "gmail_readonly",
             "aws_readonly",
             "project_continue",
+            "daily_briefing",
+            "google_connect",
         }
         and
         classified[

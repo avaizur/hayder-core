@@ -21,7 +21,7 @@ from urllib.parse import (
 
 import boto3
 
-from intent import resolve_intent
+from intent import normalize_phrase, resolve_intent
 from attention import important_summary
 from attention_items import build_attention_items
 from calendar_tool import (
@@ -795,6 +795,8 @@ def google_connect(
         {
             "assistant":
                 "Hayder",
+            "tool":
+                "google_connect",
             "authorization_url":
                 authorization_url,
             "scope":
@@ -803,7 +805,11 @@ def google_connect(
             "message":
                 "Open authorization_url "
                 "in your browser to connect Gmail read/send "
-                "and read-only Calendar access."
+                "and read-only Calendar access.",
+            "reply":
+                "Open authorization_url "
+                "in your browser to connect Gmail read/send "
+                "and read-only Calendar access.",
         },
     )
 
@@ -1416,6 +1422,8 @@ def detect_important_inbox_request(
         "priority",
         "worth my attention",
         "need my attention",
+        "needs my attention",
+        "what needs my attention",
         "anything i should know",
         "anything important",
         "what needs attention",
@@ -2278,6 +2286,12 @@ def detect_sensitive_action(
                 "send message",
                 "send a message",
                 "send the message",
+                "draft an email",
+                "draft email",
+                "draft the email",
+                "draft this email",
+                "write an email",
+                "write email",
             ],
         ),
 
@@ -2402,25 +2416,57 @@ def normalize_email_draft(draft):
     return normalized
 
 
-def extract_email_draft(payload, message):
-    structured = normalize_email_draft(
-        payload.get("email_draft")
-    )
-    if structured:
-        return structured
+def resolve_user_email(user_id):
+    try:
+        conn = load_google_connection(user_id)
+        if conn and isinstance(conn, dict) and conn.get("gmail_email"):
+            email = str(conn["gmail_email"]).strip()
+            if email and "@" in email:
+                return email
+    except Exception:
+        pass
+    return ""
+
+
+def extract_email_draft(payload, message, user_id=None):
+    if isinstance(payload, dict):
+        structured = normalize_email_draft(
+            payload.get("email_draft")
+        )
+        if structured:
+            return structured
 
     match = re.fullmatch(
-        r"\s*(?:send (?:an? )?email\s*)?"
+        r"\s*(?:(?:send|draft)\s+(?:an? )?email\s*)?"
         r"to:\s*(?P<to>[^\r\n]+)\s*[\r\n]+"
         r"subject:\s*(?P<subject>[^\r\n]+)\s*[\r\n]+"
         r"body:\s*(?P<body>[\s\S]+?)\s*",
         message,
         re.IGNORECASE,
     )
-    if not match:
-        return None
+    if match:
+        draft = match.groupdict()
+        if draft.get("to", "").strip().lower() in ("myself", "me"):
+            draft["to"] = resolve_user_email(user_id)
+        return normalize_email_draft(draft)
 
-    return normalize_email_draft(match.groupdict())
+    conv_match = re.search(
+        r"(?:draft|send|write)\s+(?:an?\s+)?email\s+to\s+(?P<to>myself|me|[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+)\s+(?:saying|that\s+says)\s+(?P<content>[\s\S]+)$",
+        message.strip(),
+        re.IGNORECASE,
+    )
+    if conv_match:
+        to_val = conv_match.group("to").strip()
+        if to_val.lower() in ("myself", "me"):
+            to_val = resolve_user_email(user_id)
+        content = conv_match.group("content").strip()
+        return normalize_email_draft({
+            "to": to_val,
+            "subject": content,
+            "body": content,
+        })
+
+    return None
 
 
 def email_execution_reply(item):
@@ -2629,6 +2675,50 @@ Rules:
     return text
 
 
+def detect_google_connect_request(message):
+    text = normalize_phrase(message)
+    google_connect_phrases = [
+        "connect my google account",
+        "connect google account",
+        "connect my google",
+        "connect google",
+        "connect my gmail",
+        "connect gmail",
+        "connect calendar",
+        "connect my calendar",
+        "link my google account",
+        "link google account",
+    ]
+    return any(p in text for p in google_connect_phrases) or (
+        ("connect" in text or "link" in text) and "google" in text
+    )
+
+
+def detect_daily_briefing_request(message):
+    text = normalize_phrase(message)
+    briefing_phrases = [
+        "what needs my attention today",
+        "what needs attention today",
+        "what needs my attention",
+        "what needs attention",
+        "whats needed by attention today",
+        "what's needed by attention today",
+        "what should i focus on today",
+        "what should i do today",
+        "brief me for today",
+        "brief me today",
+        "daily briefing",
+        "give me my briefing",
+        "what matters today",
+        "what is important today",
+        "anything important today",
+    ]
+    return any(phrase in text for phrase in briefing_phrases) or (
+        any(w in text for w in ("attention", "briefing", "focus"))
+        and any(w in text for w in ("today", "now", "what", "needs"))
+    )
+
+
 # ------------------------------------------------
 # CHAT
 # ------------------------------------------------
@@ -2636,6 +2726,7 @@ Rules:
 def chat(
     user_id,
     payload,
+    event=None,
 ):
 
     message = payload.get(
@@ -2854,7 +2945,7 @@ def chat(
     if sensitive_action:
 
         if sensitive_action["action_type"] == "email_send":
-            email_draft = extract_email_draft(payload, message)
+            email_draft = extract_email_draft(payload, message, user_id=user_id)
 
             if not email_draft:
                 return response(
@@ -2995,10 +3086,33 @@ def chat(
     )
 
     # ------------------------------------------------
+    # GOOGLE CONNECT
+    # ------------------------------------------------
+
+    if intent == "google_connect" or detect_google_connect_request(message):
+        try:
+            return google_connect(
+                event or {},
+                user_id,
+            )
+        except Exception as exc:
+            print(
+                "[GOOGLE CONNECT ERROR]",
+                str(exc),
+            )
+            return response(
+                502,
+                {
+                    "assistant": "Hayder",
+                    "error": "Google connection could not be initiated. Please try again.",
+                },
+            )
+
+    # ------------------------------------------------
     # DAILY ATTENTION BRIEFING
     # ------------------------------------------------
 
-    if intent == "daily_briefing":
+    if intent == "daily_briefing" or detect_daily_briefing_request(message):
 
         briefing_parts = []
         gmail_metadata = []
@@ -4376,6 +4490,7 @@ def lambda_handler(
             return chat(
                 user_id,
                 get_body(event),
+                event=event,
             )
 
         except json.JSONDecodeError:
