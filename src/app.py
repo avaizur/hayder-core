@@ -1980,6 +1980,32 @@ def update_approval_status(
     )
 
 
+def get_latest_pending_approval(user_id):
+    try:
+        result = approval_table.query(
+            KeyConditionExpression="user_id = :user_id",
+            ExpressionAttributeValues={":user_id": user_id},
+        )
+        if isinstance(result, dict):
+            items = result.get("Items", [])
+        else:
+            items = []
+        if not isinstance(items, list):
+            items = []
+        waiting = [
+            item
+            for item in items
+            if isinstance(item, dict) and item.get("status") == "WAITING_APPROVAL"
+        ]
+        if not waiting:
+            return None
+        waiting.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
+        return waiting[0]
+    except Exception as exc:
+        print("[GET PENDING APPROVAL ERROR]", str(exc))
+        return None
+
+
 def get_approval_record(user_id, approval_id):
     return approval_table.get_item(
         Key={"user_id": user_id, "approval_id": approval_id}
@@ -2396,6 +2422,28 @@ def detect_approval_command(
             reject_match.group(1),
         )
 
+    follow_up_approve = re.match(
+        r"^(?:yes,?\s+)?approve(?:\s+(?:it|that|this|the\s+email|draft))?[.!]?$",
+        text,
+        re.IGNORECASE,
+    )
+    if follow_up_approve:
+        return (
+            "APPROVED",
+            None,
+        )
+
+    follow_up_reject = re.match(
+        r"^(?:no,?\s+)?reject(?:\s+(?:it|that|this|the\s+email|draft))?[.!]?$",
+        text,
+        re.IGNORECASE,
+    )
+    if follow_up_reject:
+        return (
+            "REJECTED",
+            None,
+        )
+
     return None
 
 
@@ -2425,6 +2473,8 @@ def resolve_user_email(user_id):
                 return email
     except Exception:
         pass
+    if user_id and isinstance(user_id, str) and "@" in user_id:
+        return user_id.strip()
     return ""
 
 
@@ -2451,7 +2501,7 @@ def extract_email_draft(payload, message, user_id=None):
         return normalize_email_draft(draft)
 
     conv_match = re.search(
-        r"(?:draft|send|write)\s+(?:an?\s+)?email\s+to\s+(?P<to>myself|me|[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+)\s+(?:saying|that\s+says)\s+(?P<content>[\s\S]+)$",
+        r"(?:draft|send|write)\s+(?:an?\s+)?email\s+to\s+(?P<to>myself|me|[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+)\s+(?:saying|that\s+says):?\s+(?P<content>[\s\S]+)$",
         message.strip(),
         re.IGNORECASE,
     )
@@ -2460,6 +2510,10 @@ def extract_email_draft(payload, message, user_id=None):
         if to_val.lower() in ("myself", "me"):
             to_val = resolve_user_email(user_id)
         content = conv_match.group("content").strip()
+        if (content.startswith('"') and content.endswith('"')) or (
+            content.startswith("'") and content.endswith("'")
+        ):
+            content = content[1:-1].strip()
         return normalize_email_draft({
             "to": to_val,
             "subject": content,
@@ -2859,6 +2913,22 @@ def chat(
             new_status,
             approval_id,
         ) = approval_command
+
+        if not approval_id:
+            pending = get_latest_pending_approval(user_id)
+            if not pending:
+                return response(
+                    200,
+                    {
+                        "assistant":
+                            "Hayder",
+                        "reply":
+                            "I have nothing to approve."
+                            if new_status == "APPROVED"
+                            else "I have nothing to reject.",
+                    },
+                )
+            approval_id = pending["approval_id"]
 
         item, error = (
             decide_approval(
