@@ -248,10 +248,94 @@ Resources:
             Auth:
               Authorizer: NONE
 
+        HayderPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /hayder
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        HayderFeaturesPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /hayder/features
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        HayderHowItWorksPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /hayder/how-it-works
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        HayderSecurityPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /hayder/security
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        HayderPricingPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /hayder/pricing
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        HayderAboutPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /hayder/about
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        HayderSupportPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /hayder/support
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        PrivacyPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /privacy
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        TermsPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /terms
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
 Outputs:
 
   HayderApiUrl:
     Value: !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  HayderWebUrl:
+    Value: !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/hayder"
 
   HayderVoiceUrl:
     Value: !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"
