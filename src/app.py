@@ -1980,7 +1980,48 @@ def update_approval_status(
     )
 
 
-def get_latest_pending_approval(user_id):
+APPROVAL_FRESHNESS_WINDOW_SECONDS = 1800  # 30 minutes
+
+
+def parse_iso_datetime(value):
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except Exception:
+            return None
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def is_approval_fresh(
+    item,
+    max_age_seconds=APPROVAL_FRESHNESS_WINDOW_SECONDS,
+    now=None,
+):
+    if not isinstance(item, dict):
+        return False
+    dt = parse_iso_datetime(item.get("created_at"))
+    if dt is None:
+        return False
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age_seconds = (now - dt).total_seconds()
+    return -60 <= age_seconds <= max_age_seconds
+
+
+def get_latest_pending_approval(
+    user_id,
+    max_age_seconds=APPROVAL_FRESHNESS_WINDOW_SECONDS,
+):
     try:
         result = approval_table.query(
             KeyConditionExpression="user_id = :user_id",
@@ -1999,8 +2040,15 @@ def get_latest_pending_approval(user_id):
         ]
         if not waiting:
             return None
-        waiting.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
-        return waiting[0]
+        waiting.sort(
+            key=lambda x: parse_iso_datetime(x.get("created_at"))
+            or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        latest = waiting[0]
+        if not is_approval_fresh(latest, max_age_seconds=max_age_seconds):
+            return None
+        return latest
     except Exception as exc:
         print("[GET PENDING APPROVAL ERROR]", str(exc))
         return None

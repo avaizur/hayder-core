@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -377,6 +378,37 @@ class Phase1VoiceChatRoutingTests(unittest.TestCase):
             )
 
         mock_openai.assert_not_called()
+        self.assertEqual(result["statusCode"], 200)
+        body = json.loads(result["body"])
+        self.assertEqual(body.get("reply"), "I have nothing to approve.")
+
+    def test_approve_it_with_stale_pending_approval_reports_nothing_to_approve(self):
+        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+        stale_item = {
+            "approval_id": "00000000-0000-0000-0000-000000000099",
+            "user_id": "user-1",
+            "status": "WAITING_APPROVAL",
+            "action_type": "email_send",
+            "target": "user@gmail.com",
+            "details": {"to": "user@gmail.com", "subject": "Old", "body": "Old"},
+            "created_at": stale_time,
+        }
+        mock_approval_table = Mock()
+        mock_approval_table.query.return_value = {"Items": [stale_item]}
+
+        with patch.object(app, "approval_table", mock_approval_table), \
+             patch.object(app, "table", self.mock_table), \
+             patch.object(intent_mod, "table", self.mock_table), \
+             patch.object(app, "gmail_send_email") as mock_send, \
+             patch.object(app, "call_openai") as mock_openai:
+
+            result = app.chat(
+                "user-1",
+                {"message": "Approve it"},
+            )
+
+        mock_openai.assert_not_called()
+        mock_send.assert_not_called()
         self.assertEqual(result["statusCode"], 200)
         body = json.loads(result["body"])
         self.assertEqual(body.get("reply"), "I have nothing to approve.")

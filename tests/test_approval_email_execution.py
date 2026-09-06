@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
@@ -373,6 +374,187 @@ class ApprovalEmailExecutionTests(unittest.TestCase):
             "https://www.googleapis.com/auth/gmail.send",
             app.GOOGLE_SCOPE,
         )
+
+    def test_conversational_approval_accepts_recent_pending_draft(self):
+        now = datetime.now(timezone.utc)
+        recent_time = (now - timedelta(minutes=5)).isoformat()
+        item = {
+            "approval_id": "00000000-0000-0000-0000-000000000001",
+            "user_id": "user-1",
+            "status": "WAITING_APPROVAL",
+            "action_type": "email_send",
+            "created_at": recent_time,
+            "details": {
+                "to": "customer@example.com",
+                "subject": "Status",
+                "body": "Ready",
+            },
+        }
+        mock_table = Mock()
+        mock_table.query.return_value = {"Items": [item]}
+
+        with (
+            patch.object(app, "approval_table", mock_table),
+            patch.object(
+                app,
+                "decide_approval",
+                return_value=(
+                    {**item, "status": "APPROVED", "execution_status": "EXECUTED"},
+                    None,
+                ),
+            ) as decide,
+        ):
+            result = app.chat("user-1", {"message": "Approve it"})
+
+        decide.assert_called_once_with(
+            "user-1", "00000000-0000-0000-0000-000000000001", "APPROVED"
+        )
+        self.assertEqual(result["statusCode"], 200)
+        body = json.loads(result["body"])
+        self.assertEqual(body.get("execution_status"), "EXECUTED")
+        self.assertEqual(body.get("reply"), "Email sent.")
+
+    def test_conversational_approval_rejects_stale_pending_draft(self):
+        now = datetime.now(timezone.utc)
+        stale_time = (now - timedelta(minutes=45)).isoformat()
+        item = {
+            "approval_id": "00000000-0000-0000-0000-000000000002",
+            "user_id": "user-1",
+            "status": "WAITING_APPROVAL",
+            "action_type": "email_send",
+            "created_at": stale_time,
+            "details": {
+                "to": "customer@example.com",
+                "subject": "Status",
+                "body": "Ready",
+            },
+        }
+        mock_table = Mock()
+        mock_table.query.return_value = {"Items": [item]}
+
+        with (
+            patch.object(app, "approval_table", mock_table),
+            patch.object(app, "decide_approval") as decide,
+        ):
+            result = app.chat("user-1", {"message": "Approve it"})
+
+        decide.assert_not_called()
+        self.assertEqual(result["statusCode"], 200)
+        body = json.loads(result["body"])
+        self.assertEqual(body.get("reply"), "I have nothing to approve.")
+
+    def test_conversational_reject_ignores_stale_pending_draft(self):
+        now = datetime.now(timezone.utc)
+        stale_time = (now - timedelta(minutes=45)).isoformat()
+        item = {
+            "approval_id": "00000000-0000-0000-0000-000000000002",
+            "user_id": "user-1",
+            "status": "WAITING_APPROVAL",
+            "action_type": "email_send",
+            "created_at": stale_time,
+            "details": {
+                "to": "customer@example.com",
+                "subject": "Status",
+                "body": "Ready",
+            },
+        }
+        mock_table = Mock()
+        mock_table.query.return_value = {"Items": [item]}
+
+        with (
+            patch.object(app, "approval_table", mock_table),
+            patch.object(app, "decide_approval") as decide,
+        ):
+            result = app.chat("user-1", {"message": "Reject it"})
+
+        decide.assert_not_called()
+        self.assertEqual(result["statusCode"], 200)
+        body = json.loads(result["body"])
+        self.assertEqual(body.get("reply"), "I have nothing to reject.")
+
+    def test_explicit_approval_by_id_remains_unaffected_for_stale_draft(self):
+        now = datetime.now(timezone.utc)
+        stale_time = (now - timedelta(hours=2)).isoformat()
+        approval_id = "00000000-0000-0000-0000-000000000003"
+        item = {
+            "approval_id": approval_id,
+            "user_id": "user-1",
+            "status": "APPROVED",
+            "action_type": "email_send",
+            "execution_status": "EXECUTED",
+            "created_at": stale_time,
+            "summary": "Send update",
+        }
+
+        with patch.object(
+            app, "decide_approval", return_value=(item, None)
+        ) as decide:
+            chat_result = app.chat(
+                "user-1", {"message": f"Approve {approval_id}"}
+            )
+
+        decide.assert_called_once_with("user-1", approval_id, "APPROVED")
+        self.assertEqual(chat_result["statusCode"], 200)
+        body = json.loads(chat_result["body"])
+        self.assertEqual(body.get("execution_status"), "EXECUTED")
+        self.assertEqual(body.get("reply"), "Email sent.")
+
+    def test_get_latest_pending_approval_freshness_window_behavior(self):
+        now = datetime.now(timezone.utc)
+        recent_item = {
+            "approval_id": "recent-id",
+            "user_id": "user-1",
+            "status": "WAITING_APPROVAL",
+            "created_at": (now - timedelta(minutes=10)).isoformat(),
+        }
+        stale_item = {
+            "approval_id": "stale-id",
+            "user_id": "user-1",
+            "status": "WAITING_APPROVAL",
+            "created_at": (now - timedelta(minutes=35)).isoformat(),
+        }
+        older_stale_item = {
+            "approval_id": "older-stale-id",
+            "user_id": "user-1",
+            "status": "WAITING_APPROVAL",
+            "created_at": (now - timedelta(hours=2)).isoformat(),
+        }
+
+        mock_table = Mock()
+        with patch.object(app, "approval_table", mock_table):
+            # 1. Only stale draft -> returns None
+            mock_table.query.return_value = {"Items": [stale_item]}
+            self.assertIsNone(app.get_latest_pending_approval("user-1"))
+
+            # 2. Both stale and recent draft -> returns recent draft
+            mock_table.query.return_value = {
+                "Items": [stale_item, recent_item, older_stale_item]
+            }
+            self.assertEqual(
+                app.get_latest_pending_approval("user-1"), recent_item
+            )
+
+            # 3. Only recent draft -> returns recent draft
+            mock_table.query.return_value = {"Items": [recent_item]}
+            self.assertEqual(
+                app.get_latest_pending_approval("user-1"), recent_item
+            )
+
+            # 4. Multiple stale drafts -> returns None
+            mock_table.query.return_value = {
+                "Items": [stale_item, older_stale_item]
+            }
+            self.assertIsNone(app.get_latest_pending_approval("user-1"))
+
+            # 5. Invalid created_at -> returns None
+            invalid_item = {
+                "approval_id": "bad-date-id",
+                "user_id": "user-1",
+                "status": "WAITING_APPROVAL",
+                "created_at": "not-a-valid-date",
+            }
+            mock_table.query.return_value = {"Items": [invalid_item]}
+            self.assertIsNone(app.get_latest_pending_approval("user-1"))
 
 
 if __name__ == "__main__":
