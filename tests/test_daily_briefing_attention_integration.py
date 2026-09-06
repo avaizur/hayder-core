@@ -21,14 +21,22 @@ os.environ.setdefault("AWS_LAMBDA_FUNCTION_NAME", "test-function")
 class FakeBoto3:
     def resource(self, service):
         return SimpleNamespace(
-            Table=lambda name: SimpleNamespace(name=name),
+            Table=lambda name: SimpleNamespace(
+                name=name,
+                get_item=lambda **kwargs: {},
+                put_item=lambda **kwargs: None,
+            ),
         )
 
     def client(self, service):
         return SimpleNamespace()
 
 
-sys.modules.setdefault("boto3", FakeBoto3())
+sys.modules["boto3"] = FakeBoto3()
+if "intent" in sys.modules:
+    importlib.reload(sys.modules["intent"])
+if "app" in sys.modules:
+    importlib.reload(sys.modules["app"])
 app = importlib.import_module("app")
 
 
