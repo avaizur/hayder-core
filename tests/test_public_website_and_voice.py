@@ -16,12 +16,12 @@ Validates:
 2. Brand, product, and legal decisions:
    - Xorwia company/legal entity
    - Support contact hayder@xorwia.com
-   - Hayder Pro launch price £19.99/month (billing connected separately at launch)
-   - Business plan marked 'Coming later'
+   - Hayder Pro launch price £19.99/month (optional £199/year)
+   - Single Pro plan only (no Basic or Business tiers)
    - Absence of unsupported compliance claims (no SOC 2, no GDPR certification badges, no fake end-to-end encryption)
 3. Voice UI states:
    - idle, listening, thinking, speaking, reconnect required, error
-4. Temporary logo placeholder and multicolour heartbeat motif.
+4. Locked logo system with violet-led orbital pulse mark.
 5. Responsive and accessibility considerations.
 """
 
@@ -81,19 +81,22 @@ class PublicWebsiteAndVoiceTests(unittest.TestCase):
         self.assertIn("Page not found", res["body"])
 
     def test_home_page_elements(self):
-        """Landing page contains hero, proposition, Google CTA, preview, benefits, trust reassurance, and heartbeat motif."""
+        """Landing page contains hero, proposition, Google CTA, preview, benefits, trust reassurance, and voice preview."""
         res = voice.lambda_handler({"rawPath": "/hayder"}, {})
         html = res["body"]
 
-        # Hero & Proposition
+        # Hero & Proposition (Locked copy)
         self.assertIn("HAYDER", html)
         self.assertIn("by Xorwia", html)
-        self.assertIn("The operations assistant that prepares. You approve.", html)
-        self.assertIn("Gmail and Google Calendar", html)
+        self.assertIn("Your day, prepared. You stay in control.", html)
+        self.assertIn("Hayder prepares; you approve.", html)
+        self.assertIn("A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.", html)
 
-        # Google CTA
+        # CTAs
         self.assertIn("Connect with Google", html)
         self.assertIn("/oauth/google/connect", html)
+        self.assertIn("See how Hayder works", html)
+        self.assertIn("/hayder/how-it-works", html)
 
         # Product UI Preview
         self.assertIn("WAITING_APPROVAL", html)
@@ -110,7 +113,7 @@ class PublicWebsiteAndVoiceTests(unittest.TestCase):
         self.assertIn("Single verified Google account", html)
         self.assertIn("Zero autonomous email sends", html)
 
-        # Heartbeat motif & Voice preview
+        # Voice preview & Orbital Pulse states
         self.assertIn("A calm, human-like voice experience", html)
         self.assertIn("Interactive Voice State Preview", html)
         self.assertIn("Hear Hayder's Voice Sample", html)
@@ -157,15 +160,16 @@ class PublicWebsiteAndVoiceTests(unittest.TestCase):
         self.assertNotIn("end-to-end encryption", html.lower())
 
     def test_pricing_page_tier_and_trial(self):
-        """Pricing specifies £19.99/month, 'Get Started' CTA, Business 'Coming later', and no enforced trial claims."""
+        """Pricing specifies £19.99/month, optional £199/year, 'Connect with Google' CTA, single Pro plan only, and no enforced trial claims."""
         res = voice.lambda_handler({"rawPath": "/hayder/pricing"}, {})
         html = res["body"]
 
         self.assertIn("&pound;19.99", html)
+        self.assertIn("&pound;199", html)
         self.assertIn("Hayder Pro", html)
-        self.assertIn("Hayder Business", html)
-        self.assertIn("Coming later", html)
-        self.assertIn("Get Started", html)
+        self.assertNotIn("Hayder Business", html)
+        self.assertNotIn("Coming later", html)
+        self.assertIn("Connect with Google", html)
         self.assertNotIn("14-day free trial", html)
         self.assertNotIn("14-day", html)
 
@@ -262,11 +266,21 @@ class PublicWebsiteAndVoiceTests(unittest.TestCase):
         for dom_id in required_dom_ids:
             self.assertIn(dom_id, html)
 
-    def test_temporary_logo_placeholder_present(self):
-        """Temporary logo placeholder contains comment indicating exact logo still to be locked."""
+    def test_locked_logo_system_present(self):
+        """Locked logo system uses violet-led orbital pulse SVG mark and clean HAYDER wordmark with no ECG paths or temporary comments."""
         res = voice.lambda_handler({"rawPath": "/hayder"}, {})
         html = res["body"]
-        self.assertIn("Temporary Placeholder: Hayder multicolour heartbeat logo to be locked", html)
+        # SVG logo mark classes and gradient
+        self.assertIn("logo-mark-svg", html)
+        self.assertIn("#7c3aed", html)
+        self.assertIn("#2563eb", html)
+        self.assertIn("#0d9488", html)
+        # Wordmark & badge
+        self.assertIn("HAYDER", html)
+        self.assertIn("by Xorwia", html)
+        # No temporary placeholder text or medical ECG zigzag path
+        self.assertNotIn("Temporary Placeholder", html)
+        self.assertNotIn("M6 14.5h3.2l2.3-4.5", html)
 
     def test_responsive_meta_and_accessibility(self):
         """Pages contain viewport meta tag and semantic landmarks."""

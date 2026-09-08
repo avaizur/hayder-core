@@ -32,7 +32,7 @@ SHARED_CSS = """
   --border-strong: #d1d5db;
   --primary-button: #111827;
   --primary-button-hover: #1f2937;
-  --google-blue: #1a73e8;
+  --hayder-blue: #2563eb;
   --pulse-cyan: #00acc1;
   --pulse-violet: #7c3aed;
   --pulse-amber: #f59e0b;
@@ -98,7 +98,7 @@ header.site-header {
   gap: 10px;
 }
 
-.logo-heartbeat-svg {
+.logo-mark-svg, .logo-heartbeat-svg {
   width: 28px;
   height: 28px;
   flex-shrink: 0;
@@ -235,15 +235,34 @@ h1.hero-title {
   line-height: 1.15;
   letter-spacing: -0.02em;
   color: var(--text-primary);
-  margin-bottom: 20px;
+  margin-bottom: 12px;
+}
+
+.hero-trust-line {
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--pulse-violet);
+  margin-bottom: 18px;
+  letter-spacing: -0.01em;
 }
 
 p.hero-subtitle {
-  font-size: 20px;
-  line-height: 1.5;
+  font-size: 19px;
+  line-height: 1.55;
   color: var(--text-secondary);
-  margin-bottom: 36px;
+  margin-bottom: 32px;
   font-weight: 400;
+  max-width: 680px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.hero-cta-group {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 28px;
 }
 
 h2.section-title {
@@ -309,28 +328,56 @@ h3.card-title {
   font-size: 20px;
 }
 
-/* Subtle Multicolour Heartbeat Motif */
-.heartbeat-motif {
+/* Subtle Orbital Pulse Motif & Voice States */
+.heartbeat-motif, .orbital-motif {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   position: relative;
 }
 
-.heartbeat-pulse-ring {
+.heartbeat-pulse-ring, .orbital-pulse-ring {
   position: absolute;
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  border: 2px solid var(--google-blue);
-  opacity: 0.15;
-  animation: pulse-ring 3s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  border: 2px solid var(--pulse-violet);
+  opacity: 0.18;
+  animation: gentle-breathing 4s ease-in-out infinite;
 }
 
+@keyframes gentle-breathing {
+  0%, 100% { transform: scale(0.96); opacity: 0.15; }
+  50% { transform: scale(1.06); opacity: 0.35; }
+}
+
+@keyframes subtle-pulse {
+  0%, 100% { transform: scale(0.98); opacity: 0.2; }
+  50% { transform: scale(1.14); opacity: 0.5; }
+}
+
+@keyframes soft-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes rhythmic-pulse {
+  0%, 100% { transform: scale(0.96); opacity: 0.2; }
+  25% { transform: scale(1.18); opacity: 0.6; }
+  50% { transform: scale(1.02); opacity: 0.3; }
+  75% { transform: scale(1.12); opacity: 0.5; }
+}
+
+/* Fallback legacy keyframes */
 @keyframes pulse-ring {
   0% { transform: scale(0.85); opacity: 0.4; }
   50% { transform: scale(1.15); opacity: 0.1; }
   100% { transform: scale(0.85); opacity: 0.4; }
+}
+
+.btn:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--pulse-violet);
+  outline-offset: 2px;
 }
 
 /* Product UI Preview Card */
@@ -548,7 +595,7 @@ h3.card-title {
 .pricing-trial-note {
   font-size: 14px;
   font-weight: 600;
-  color: var(--google-blue);
+  color: var(--hayder-blue);
   margin-bottom: 24px;
 }
 
@@ -569,7 +616,7 @@ h3.card-title {
 }
 
 .pricing-feature-check {
-  color: var(--google-blue);
+  color: var(--hayder-blue);
   font-weight: bold;
 }
 
@@ -668,66 +715,116 @@ footer.site-footer {
 @media (max-width: 768px) {
   .header-container {
     flex-direction: column;
-    align-items: flex-start;
-    gap: 16px;
-    padding: 14px 18px;
+    align-items: stretch;
+    gap: 14px;
+    padding: 12px 16px;
+  }
+  .brand-wrapper {
+    justify-content: space-between;
+    width: 100%;
   }
   nav.main-nav {
+    display: flex;
     flex-wrap: wrap;
-    gap: 16px;
+    gap: 12px 16px;
     width: 100%;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .nav-link {
+    padding: 6px 0;
+    font-size: 14px;
   }
   .nav-cta-group {
     width: 100%;
-    margin-top: 8px;
+    margin-top: 6px;
+    display: flex;
+    gap: 8px;
   }
   .nav-cta-group .btn {
     flex: 1;
+    min-height: 40px;
+    padding: 8px 12px;
   }
   h1.hero-title {
-    font-size: 34px;
+    font-size: 32px;
+    line-height: 1.2;
   }
-  p.hero-subtitle {
+  .hero-trust-line {
     font-size: 17px;
   }
+  p.hero-subtitle {
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  .hero-cta-group {
+    flex-direction: column;
+    width: 100%;
+  }
+  .hero-cta-group .btn {
+    width: 100%;
+  }
+  .reassurance-strip {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
   .section {
-    padding: 48px 18px;
+    padding: 40px 16px;
   }
   .section-hero {
-    padding: 56px 18px 40px;
+    padding: 48px 16px 36px;
   }
   .grid-2, .grid-3 {
     grid-template-columns: 1fr;
+    gap: 20px;
   }
   .footer-grid {
     grid-template-columns: 1fr;
     gap: 32px;
   }
   .pricing-card {
-    padding: 28px 20px;
+    padding: 28px 18px;
+  }
+  .voice-demo-container {
+    padding: 24px 16px;
+  }
+  .voice-state-controls {
+    gap: 6px;
+  }
+  .state-pill {
+    padding: 6px 12px;
+    font-size: 12px;
   }
 }
 """
 
 # ---------------------------------------------------------------------------
-# SVG ASSETS & PLACEHOLDERS
+# SVG ASSETS & LOCKED LOGO SYSTEM
+# Violet-led orbital/pulse mark (violet -> blue -> teal) with small controlled
+# dots and clean HAYDER wordmark. No medical/ECG look.
 # ---------------------------------------------------------------------------
 
-# Temporary Placeholder: Hayder multicolour heartbeat logo to be locked.
-# Uses restrained subtle multicolor strokes: blue #1a73e8, cyan #00acc1, violet #7c3aed, amber #f59e0b.
 def render_logo_svg(width=28, height=28):
-    return f"""<!-- Temporary Placeholder: Hayder multicolour heartbeat logo to be locked -->
-<svg class="logo-heartbeat-svg" width="{width}" height="{height}" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Hayder multicolour heartbeat logo">
+    return f"""<svg class="logo-mark-svg" width="{width}" height="{height}" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hayder logo: violet-led orbital pulse mark">
   <defs>
-    <linearGradient id="hayder-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1a73e8" />
-      <stop offset="35%" stop-color="#00acc1" />
-      <stop offset="70%" stop-color="#7c3aed" />
-      <stop offset="100%" stop-color="#f59e0b" />
+    <linearGradient id="hayder-orbit-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed" />
+      <stop offset="50%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#0d9488" />
     </linearGradient>
   </defs>
-  <circle cx="14" cy="14" r="12.5" stroke="url(#hayder-grad)" stroke-width="1.75" fill="none" opacity="0.9" />
-  <path d="M6 14.5h3.2l2.3-4.5 3.2 9 2.5-6 1.8 3 1.5-1.5H22" stroke="url(#hayder-grad)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+  <!-- Outer orbital pulse ring -->
+  <circle cx="14" cy="14" r="11.5" stroke="url(#hayder-orbit-grad)" stroke-width="1.6" fill="none" opacity="0.9" />
+  <!-- Inner orbital arc -->
+  <circle cx="14" cy="14" r="6.5" stroke="url(#hayder-orbit-grad)" stroke-width="1.2" stroke-dasharray="24 8" fill="none" opacity="0.65" />
+  <!-- Central core pulse dot -->
+  <circle cx="14" cy="14" r="2.4" fill="url(#hayder-orbit-grad)" />
+  <!-- Small controlled orbital dots -->
+  <circle cx="14" cy="2.5" r="1.5" fill="#7c3aed" />
+  <circle cx="23.5" cy="10" r="1.3" fill="#2563eb" />
+  <circle cx="5" cy="16" r="1.4" fill="#0d9488" />
+  <circle cx="18.5" cy="17" r="1.1" fill="#06b6d4" />
 </svg>"""
 
 def render_google_icon_svg():
@@ -759,7 +856,7 @@ def render_header(current_path="/hayder"):
     return f"""<header class="site-header">
   <div class="header-container">
     <div class="brand-wrapper">
-      <a href="/hayder" class="brand-logo" aria-label="Hayder home">
+      <a href="/hayder" class="brand-logo" aria-label="Hayder by Xorwia home">
         {render_logo_svg(28, 28)}
         <span class="brand-title">HAYDER</span>
       </a>
@@ -769,7 +866,7 @@ def render_header(current_path="/hayder"):
       {''.join(links_html)}
       <div class="nav-cta-group">
         <a href="/voice" class="btn btn-secondary btn-sm" aria-label="Open Voice Assistant">Open Voice</a>
-        <a href="/oauth/google/connect" class="btn btn-primary btn-sm" aria-label="Connect Google Account">Connect Google</a>
+        <a href="/oauth/google/connect" class="btn btn-primary btn-sm" aria-label="Connect with Google">Connect with Google</a>
       </div>
     </nav>
   </div>
@@ -785,11 +882,14 @@ def render_footer():
           <span class="brand-title" style="font-size: 16px;">HAYDER</span>
           <span class="brand-badge">by Xorwia</span>
         </div>
-        <p style="font-size: 14px; color: var(--text-secondary); max-width: 320px; line-height: 1.5; margin-bottom: 16px;">
-          Hayder is a personal operations assistant by Xorwia. It remembers, organizes your day, and prepares sensitive actions for explicit human approval.
+        <p style="font-size: 14px; color: var(--text-secondary); max-width: 320px; line-height: 1.5; margin-bottom: 12px;">
+          A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.
+        </p>
+        <p style="font-size: 13px; font-weight: 600; color: var(--pulse-violet); margin-bottom: 14px;">
+          Hayder prepares; you approve.
         </p>
         <p style="font-size: 13px; color: var(--text-tertiary);">
-          Support: <a href="mailto:hayder@xorwia.com" style="color: var(--google-blue);">hayder@xorwia.com</a>
+          Support: <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue);">hayder@xorwia.com</a>
         </p>
       </div>
 
@@ -825,7 +925,7 @@ def render_footer():
     <div class="footer-bottom">
       <div>Hayder is a product by Xorwia. &copy; 2026 Xorwia. All rights reserved.</div>
       <div style="font-size: 12px; color: var(--text-light);">
-        Single-account Google integration &middot; Phase 1 release
+        Single-account Google integration &middot; Multi-account deferred &middot; Phase 1 release
       </div>
     </div>
   </div>
@@ -838,7 +938,7 @@ def render_html_shell(title, content, current_path="/hayder", extra_head="", ext
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{html.escape(title)} — Hayder by Xorwia</title>
-  <meta name="description" content="Hayder is the calm operations assistant by Xorwia. Unifies your morning briefing across Gmail and Google Calendar with guaranteed human approval before sensitive actions.">
+  <meta name="description" content="Hayder by Xorwia: A calm AI assistant for your email, calendar and daily priorities — with you in control of every important action. Hayder prepares; you approve.">
   <style>
 {SHARED_CSS}
   </style>
@@ -863,36 +963,37 @@ def render_home_page():
 <section class="section-hero">
   <div class="container-narrow">
     <div style="display: inline-flex; align-items: center; gap: 8px; background: var(--bg-surface); border: 1px solid var(--border-subtle); padding: 6px 14px; border-radius: 9999px; font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-bottom: 24px;">
-      <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--google-blue);"></span>
+      <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--pulse-violet);"></span>
       Hayder by Xorwia &middot; Phase 1
     </div>
 
-    <h1 class="hero-title">The operations assistant that prepares. You approve.</h1>
+    <h1 class="hero-title">Your day, prepared. You stay in control.</h1>
+    <div class="hero-trust-line">Hayder prepares; you approve.</div>
     <p class="hero-subtitle">
-      Hayder unifies your daily briefing across Gmail and Google Calendar. It organizes your morning, drafts replies, and prepares sensitive actions for your explicit approval—so you never lose context or send the wrong message.
+      A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.
     </p>
 
-    <div style="display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px;">
+    <div class="hero-cta-group">
       <a href="/oauth/google/connect" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
-      <a href="/voice" class="btn btn-primary btn-lg" aria-label="Open Voice Assistant">
-        Try Voice Assistant
+      <a href="/hayder/how-it-works" class="btn btn-secondary btn-lg" aria-label="See how Hayder works">
+        See how Hayder works
       </a>
     </div>
 
     <div class="reassurance-strip">
       <span class="reassurance-item">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color: var(--google-blue);"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color: var(--hayder-blue);" aria-hidden="true"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>
         Single verified Google account
       </span>
       <span class="reassurance-item">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color: var(--google-blue);"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color: var(--hayder-blue);" aria-hidden="true"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>
         Strict approval before action
       </span>
       <span class="reassurance-item">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color: var(--google-blue);"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="color: var(--hayder-blue);" aria-hidden="true"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>
         Zero autonomous email sends
       </span>
     </div>
@@ -911,7 +1012,7 @@ def render_home_page():
         </div>
         <div class="preview-title-bar">
           {render_logo_svg(16, 16)}
-          <span>Hayder Operational Surface &middot; Active Daily Briefing</span>
+          <span>Hayder Operational Surface &middot; Gmail and Google Calendar Briefing</span>
         </div>
         <div style="font-size: 12px; color: var(--text-tertiary); font-weight: 500;">
           user@example.com
@@ -958,8 +1059,8 @@ def render_home_page():
             <div style="margin-top: 6px; color: var(--text-tertiary);">"Hi Alex, the project checkpoint has been recorded and the next milestone is scheduled for Friday. Let me know if you need anything further."</div>
           </div>
 
-          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: gap;">
-            <span style="font-size: 12px; color: #92400e;">Hayder will never dispatch this message without your explicit approval click.</span>
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+            <span style="font-size: 12px; color: #92400e; font-weight: 500;">Hayder prepares; you approve. No message is sent without your explicit confirmation.</span>
             <div class="approval-actions">
               <span class="btn btn-secondary btn-sm" style="color: var(--pulse-rose); border-color: #fecdd3;">Reject</span>
               <span class="btn btn-primary btn-sm" style="background: #15803d; border-color: #15803d;">Approve &amp; Send</span>
@@ -971,12 +1072,12 @@ def render_home_page():
   </div>
 </section>
 
-<!-- Heartbeat Motif & Voice Interaction Preview -->
+<!-- Voice States & Interaction Preview -->
 <section class="section" style="background: var(--bg-surface); border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle);">
   <div class="container">
     <h2 class="section-title">A calm, human-like voice experience</h2>
     <p class="section-subtitle">
-      Hayder speaks and listens with natural cadence. The subtle multicolour heartbeat reflects Hayder's exact operational state.
+      Hayder speaks and listens with natural cadence. Clear visual states reflect Hayder's exact operational state.
     </p>
 
     <div class="voice-demo-container">
@@ -989,12 +1090,12 @@ def render_home_page():
         State: Idle
       </div>
       <div id="demoStateDesc" style="font-size: 13px; color: var(--text-tertiary); margin-bottom: 18px;">
-        Calm resting breath. Ready to listen or process instructions.
+        Gentle breathing. Calm resting state, ready to listen or process instructions.
       </div>
 
       <div style="margin-bottom: 24px;">
         <button id="demoAudioBtn" class="btn btn-secondary btn-sm" style="display: inline-flex; gap: 8px;">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
           Hear Hayder's Voice Sample
         </button>
       </div>
@@ -1025,7 +1126,7 @@ def render_home_page():
   <div class="container">
     <h2 class="section-title">Built for absolute control and clarity</h2>
     <p class="section-subtitle">
-      Eliminate context fragmentation without surrendering human agency.
+      Eliminate context fragmentation without surrendering human agency. Hayder prepares; you approve.
     </p>
 
     <div class="grid-2">
@@ -1041,7 +1142,7 @@ def render_home_page():
         <div class="card-icon-wrap">🛡️</div>
         <h3 class="card-title">Strict Human Approval</h3>
         <p style="color: var(--text-secondary); font-size: 15px;">
-          Read-only contextual awareness is automated, but external actions are staged. Hayder prepares exact drafts; you review and explicitly click Approve before anything is sent.
+          Read-only contextual awareness is automated, but external actions are staged. Hayder prepares exact drafts; you review and explicitly approve before anything is dispatched.
         </p>
       </div>
 
@@ -1049,7 +1150,7 @@ def render_home_page():
         <div class="card-icon-wrap">🎙️</div>
         <h3 class="card-title">Consistent Natural Voice</h3>
         <p style="color: var(--text-secondary); font-size: 15px;">
-          Interact naturally through browser-native speech recognition and calm voice synthesis. One consistent, professional assistant voice across the entire product.
+          Interact naturally through browser-native speech recognition and calm voice synthesis. Gentle breathing, subtle pulses, and rhythmic cadence provide clear operational feedback.
         </p>
       </div>
 
@@ -1057,7 +1158,7 @@ def render_home_page():
         <div class="card-icon-wrap">🔒</div>
         <h3 class="card-title">Single-Account Security</h3>
         <p style="color: var(--text-secondary); font-size: 15px;">
-          Phase 1 is strictly locked to a single verified Google account per user. This prevents multi-account confusion, credential leakage, and cross-account data commingling.
+          Phase 1 is strictly locked to a single verified Google account per user. Multi-account is deferred to prevent cross-account contamination and ensure clean cryptographic boundaries.
         </p>
       </div>
     </div>
@@ -1069,15 +1170,15 @@ def render_home_page():
   <div class="container-narrow">
     <h2 class="section-title" style="margin-bottom: 16px;">Ready to reclaim your morning focus?</h2>
     <p class="section-subtitle" style="margin-bottom: 32px;">
-      Get started with Hayder Pro today. Connect your Google account securely in less than a minute.
+      A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.
     </p>
-    <div style="display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;">
+    <div class="hero-cta-group">
       <a href="/oauth/google/connect" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
-      <a href="/hayder/pricing" class="btn btn-secondary btn-lg">
-        View Pricing Details
+      <a href="/hayder/how-it-works" class="btn btn-secondary btn-lg" aria-label="See how Hayder works">
+        See how Hayder works
       </a>
     </div>
   </div>
@@ -1089,45 +1190,51 @@ def render_home_page():
 const demoStates = {
   idle: {
     label: "State: Idle",
-    desc: "Calm resting breath. Ready to listen or process instructions.",
-    border: "var(--border-subtle)",
-    ringColor: "var(--google-blue)",
-    ringAnim: "pulse-ring 3s ease-in-out infinite"
+    desc: "Gentle breathing. Calm resting state, ready to listen or process instructions.",
+    border: "rgba(124, 58, 237, 0.25)",
+    ringColor: "var(--pulse-violet)",
+    ringAnim: "gentle-breathing 4s ease-in-out infinite",
+    ringBorder: "2px solid var(--pulse-violet)"
   },
   listening: {
     label: "State: Listening",
-    desc: "Microphone active. Hayder is capturing your natural speech.",
-    border: "var(--google-blue)",
+    desc: "Subtle pulse. Microphone active, capturing your natural speech.",
+    border: "var(--hayder-blue)",
     ringColor: "var(--pulse-cyan)",
-    ringAnim: "pulse-ring 1.2s ease-in-out infinite"
+    ringAnim: "subtle-pulse 1.6s ease-in-out infinite",
+    ringBorder: "2px solid var(--pulse-cyan)"
   },
   thinking: {
     label: "State: Thinking",
-    desc: "Analyzing context across your Gmail, calendar, and commitments.",
+    desc: "Soft orbit. Analyzing context across your email, calendar, and daily priorities.",
     border: "var(--pulse-violet)",
     ringColor: "var(--pulse-violet)",
-    ringAnim: "pulse-ring 0.8s linear infinite"
+    ringAnim: "soft-orbit 2.4s linear infinite",
+    ringBorder: "2px dashed var(--pulse-violet)"
   },
   speaking: {
     label: "State: Speaking",
-    desc: "Hayder is speaking the response with calm, natural cadence.",
+    desc: "Rhythmic pulse. Hayder speaks responses with calm, measured cadence.",
     border: "var(--pulse-cyan)",
-    ringColor: "var(--google-blue)",
-    ringAnim: "pulse-ring 1.5s ease-in-out infinite"
+    ringColor: "var(--hayder-blue)",
+    ringAnim: "rhythmic-pulse 1.4s ease-in-out infinite",
+    ringBorder: "2px solid var(--hayder-blue)"
   },
   reconnect: {
     label: "State: Reconnect Required",
-    desc: "Google session needs renewal. Clear notification with one-click reconnect.",
+    desc: "Calm clear state. Google session needs renewal with straightforward one-click reconnect.",
     border: "var(--pulse-amber)",
     ringColor: "var(--pulse-amber)",
-    ringAnim: "none"
+    ringAnim: "none",
+    ringBorder: "2px solid var(--pulse-amber)"
   },
   error: {
     label: "State: Error",
-    desc: "Network or processing issue encountered. Clean message with retry option.",
+    desc: "Calm clear state. Network or processing issue with clean retry option.",
     border: "var(--pulse-rose)",
     ringColor: "var(--pulse-rose)",
-    ringAnim: "none"
+    ringAnim: "none",
+    ringBorder: "2px solid var(--pulse-rose)"
   }
 };
 
@@ -1140,6 +1247,7 @@ function setDemoState(stateKey) {
 
   core.style.borderColor = cfg.border;
   ring.style.borderColor = cfg.ringColor;
+  ring.style.border = cfg.ringBorder;
   ring.style.animation = cfg.ringAnim;
   label.textContent = cfg.label;
   desc.textContent = cfg.desc;
@@ -1174,7 +1282,7 @@ document.getElementById("demoAudioBtn").addEventListener("click", () => {
 });
 </script>
 """
-    return render_html_shell("Hayder — Operations Assistant by Xorwia", content, current_path="/hayder", extra_scripts=extra_scripts)
+    return render_html_shell("Hayder by Xorwia — Your day, prepared. You stay in control.", content, current_path="/hayder", extra_scripts=extra_scripts)
 
 # ---------------------------------------------------------------------------
 # PAGE 2: /hayder/features
@@ -1185,8 +1293,9 @@ def render_features_page():
 <section class="section-hero">
   <div class="container-narrow">
     <h1 class="hero-title">Features built for real operational work</h1>
+    <div class="hero-trust-line">Hayder prepares; you approve.</div>
     <p class="hero-subtitle">
-      Only capabilities that are active and tested in Phase 1. No hypothetical roadmap claims.
+      A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.
     </p>
   </div>
 </section>
@@ -1199,7 +1308,7 @@ def render_features_page():
         <div class="card-icon-wrap">📧</div>
         <h2 class="card-title" style="font-size: 21px; margin-bottom: 12px;">Gmail &amp; Email Assistance</h2>
         <p style="color: var(--text-secondary); margin-bottom: 16px;">
-          Hayder securely monitors your single connected Gmail inbox to surface urgent communications and organize your pending replies.
+          Hayder securely monitors your single connected Gmail inbox to surface urgent communications and organize your pending replies. Multi-account support is deferred.
         </p>
         <ul style="list-style: none; display: flex; flex-direction: column; gap: 10px; font-size: 14px; color: var(--text-secondary);">
           <li style="display: flex; gap: 8px;">&bull; <span><strong>Inbox scanning:</strong> Surfaces latest messages and threads requiring follow-up.</span></li>
@@ -1238,7 +1347,7 @@ def render_features_page():
         <div class="card-icon-wrap">🛡️</div>
         <h2 class="card-title" style="font-size: 21px; margin-bottom: 12px;">Human Approval Before Sensitive Actions</h2>
         <p style="color: var(--text-secondary); margin-bottom: 16px;">
-          Hayder's fundamental safety contract: AI prepares, but the human retains complete execution authority.
+          Hayder's fundamental safety contract: Hayder prepares; you approve. AI drafts; you retain complete execution authority.
         </p>
         <ul style="list-style: none; display: flex; flex-direction: column; gap: 10px; font-size: 14px; color: var(--text-secondary);">
           <li style="display: flex; gap: 8px;">&bull; <span><strong>Staged approval state:</strong> Actions enter <code>WAITING_APPROVAL</code> in DynamoDB with recipient and body details.</span></li>
@@ -1259,8 +1368,8 @@ def render_features_page():
             <span style="font-size: 13px; color: var(--text-secondary);">Calm, measured speech rate with short sentence chunks for clarity. No robotic welcome persona.</span>
           </div>
           <div style="background: var(--bg-surface); padding: 16px; border-radius: 10px; border: 1px solid var(--border-subtle);">
-            <strong style="display: block; font-size: 14px; margin-bottom: 6px; color: var(--text-primary);">Multicolour Heartbeat Feedback</strong>
-            <span style="font-size: 13px; color: var(--text-secondary);">Visual status ring transitions seamlessly between idle, listening, thinking, and speaking.</span>
+            <strong style="display: block; font-size: 14px; margin-bottom: 6px; color: var(--text-primary);">Orbital Pulse Voice States</strong>
+            <span style="font-size: 13px; color: var(--text-secondary);">Visual status ring transitions between gentle breathing (idle), subtle pulse (listening), soft orbit (thinking), rhythmic pulse (speaking), and calm clear state (reconnect/error).</span>
           </div>
           <div style="background: var(--bg-surface); padding: 16px; border-radius: 10px; border: 1px solid var(--border-subtle);">
             <strong style="display: block; font-size: 14px; margin-bottom: 6px; color: var(--text-primary);">Voice or Text Flexibility</strong>
@@ -1271,10 +1380,13 @@ def render_features_page():
 
     </div>
 
-    <div style="margin-top: 56px; text-align: center;">
+    <div class="hero-cta-group" style="margin-top: 56px;">
       <a href="/oauth/google/connect" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
-        Connect with Google to Get Started
+        Connect with Google
+      </a>
+      <a href="/hayder/how-it-works" class="btn btn-secondary btn-lg" aria-label="See how Hayder works">
+        See how Hayder works
       </a>
     </div>
   </div>
@@ -1291,8 +1403,9 @@ def render_how_it_works_page():
 <section class="section-hero">
   <div class="container-narrow">
     <h1 class="hero-title">How Hayder works</h1>
+    <div class="hero-trust-line">Hayder prepares; you approve.</div>
     <p class="hero-subtitle">
-      A transparent walkthrough of how Hayder integrates with your single Google account, analyzes context, and safely executes work under your supervision.
+      A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action. A transparent walkthrough of how Hayder integrates with your single Google account, analyzes context, and safely executes work under your supervision.
     </p>
   </div>
 </section>
@@ -1306,7 +1419,7 @@ def render_how_it_works_page():
         <div>
           <h2 class="card-title">Connect Google via Official OAuth 2.0</h2>
           <p style="color: var(--text-secondary); font-size: 15px; margin-top: 6px;">
-            You authorize Hayder with your single Google account. Google provides an OAuth token granting read-only access to your Gmail messages and Google Calendar events, plus drafting permissions. Hayder never sees or stores your Google password.
+            You authorize Hayder with your single Google account (multi-account support is deferred). Google provides an OAuth token granting read-only access to your Gmail messages and Google Calendar events, plus drafting permissions. Hayder never sees or stores your Google password.
           </p>
         </div>
       </div>
@@ -1336,7 +1449,7 @@ def render_how_it_works_page():
         <div>
           <h2 class="card-title">Hayder Prepares Actions</h2>
           <p style="color: var(--text-secondary); font-size: 15px; margin-top: 6px;">
-            Rather than sending messages autonomously, Hayder stages the exact payload. It records the action with recipient, subject, and body in a secured DynamoDB approval store with status <code>WAITING_APPROVAL</code>.
+            Hayder prepares; you approve. Rather than sending messages autonomously, Hayder stages the exact payload. It records the action with recipient, subject, and body in a secured DynamoDB approval store with status <code>WAITING_APPROVAL</code>.
           </p>
         </div>
       </div>
@@ -1363,10 +1476,13 @@ def render_how_it_works_page():
 
     </div>
 
-    <div style="margin-top: 48px; text-align: center;">
+    <div class="hero-cta-group" style="margin-top: 48px;">
       <a href="/oauth/google/connect" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
+      </a>
+      <a href="/hayder/features" class="btn btn-secondary btn-lg">
+        Explore Features
       </a>
     </div>
   </div>
@@ -1383,6 +1499,7 @@ def render_security_page():
 <section class="section-hero">
   <div class="container-narrow">
     <h1 class="hero-title">Security &amp; Privacy</h1>
+    <div class="hero-trust-line">Hayder prepares; you approve.</div>
     <p class="hero-subtitle">
       Architected around user control, minimal privilege, and explicit approval before any external write.
     </p>
@@ -1417,7 +1534,7 @@ def render_security_page():
       <div class="card">
         <h2 class="card-title" style="margin-bottom: 10px;">Single Google Account Boundary</h2>
         <p style="color: var(--text-secondary); font-size: 15px; line-height: 1.6;">
-          To eliminate cross-account contamination or inadvertent disclosure, Hayder enforces a strict single Google account policy per user in Phase 1. Multi-account routing is deliberately not supported in this release.
+          To eliminate cross-account contamination or inadvertent disclosure, Hayder enforces a strict single Google account policy per user in Phase 1. Multi-account routing is deliberately deferred and not supported in this release.
         </p>
       </div>
 
@@ -1455,20 +1572,21 @@ def render_pricing_page():
 <section class="section-hero">
   <div class="container-narrow">
     <h1 class="hero-title">Simple, transparent pricing</h1>
+    <div class="hero-trust-line">Hayder prepares; you approve.</div>
     <p class="hero-subtitle">
-      Experience complete daily operational clarity with guaranteed human approval.
+      A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action. Experience complete daily operational clarity with guaranteed human approval.
     </p>
   </div>
 </section>
 
 <section class="section" style="padding-top: 0;">
   <div class="container">
-    <div class="grid-2" style="max-width: 880px; margin: 0 auto; gap: 32px; align-items: stretch;">
+    <div style="max-width: 520px; margin: 0 auto;">
 
-      <!-- Hayder Pro Tier (Active Phase 1) -->
+      <!-- Hayder Pro Tier (Single Phase 1 Plan) -->
       <div class="pricing-card">
         <div class="pricing-badge">Phase 1 Launch</div>
-        <h2 style="font-size: 24px; font-weight: 700; color: var(--text-primary);">Hayder Pro</h2>
+        <h2 style="font-size: 24px; font-weight: 700; color: var(--text-primary);">Hayder Pro &mdash; &pound;19.99/month</h2>
         <p style="font-size: 15px; color: var(--text-secondary); margin-top: 4px;">
           For founders, leaders, and operators who need complete daily control over communications.
         </p>
@@ -1476,15 +1594,19 @@ def render_pricing_page():
         <div class="pricing-price">
           &pound;19.99 <span class="pricing-interval">/ month</span>
         </div>
+        <div style="font-size: 14px; color: var(--text-secondary); margin-top: -16px; margin-bottom: 20px;">
+          Optional annual &mdash; &pound;199/year
+        </div>
         <div class="pricing-trial-note">
-          Standard subscription &middot; Single Google account
+          Single Google account
         </div>
 
-        <a href="/oauth/google/connect" class="btn btn-primary btn-lg" style="width: 100%; margin-bottom: 8px;" aria-label="Get Started">
-          Get Started
+        <a href="/oauth/google/connect" class="btn btn-google btn-lg" style="width: 100%; margin-bottom: 8px;" aria-label="Connect with Google">
+          {render_google_icon_svg()}
+          Connect with Google
         </a>
         <div style="font-size: 12px; color: var(--text-tertiary); text-align: center; margin-bottom: 24px;">
-          Subscription checkout will be connected separately at launch &middot; Connects via Google OAuth
+          Connects securely via official Google OAuth
         </div>
 
         <div style="font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-primary); margin-bottom: 12px;">
@@ -1522,55 +1644,10 @@ def render_pricing_page():
         </ul>
       </div>
 
-      <!-- Business Plan (Coming Later) -->
-      <div class="card card-disabled" style="display: flex; flex-direction: column; justify-content: space-between; padding: 40px;">
-        <div>
-          <div style="display: inline-block; background: var(--border-strong); color: var(--text-primary); font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 9999px; text-transform: uppercase; margin-bottom: 12px;">
-            Coming Later
-          </div>
-          <h2 style="font-size: 24px; font-weight: 700; color: var(--text-primary);">Hayder Business</h2>
-          <p style="font-size: 15px; color: var(--text-secondary); margin-top: 4px;">
-            For growing executive teams and organizations needing collaborative workflows.
-          </p>
-
-          <div style="font-size: 32px; font-weight: 700; color: var(--text-tertiary); margin: 24px 0;">
-            Coming later
-          </div>
-
-          <div style="font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-primary); margin-bottom: 12px;">
-            Planned capabilities:
-          </div>
-          <ul class="pricing-features-list">
-            <li class="pricing-feature-item">
-              <span style="color: var(--text-tertiary);">&bull;</span>
-              <span>Multi-seat team accounts</span>
-            </li>
-            <li class="pricing-feature-item">
-              <span style="color: var(--text-tertiary);">&bull;</span>
-              <span>Centralized administrative billing</span>
-            </li>
-            <li class="pricing-feature-item">
-              <span style="color: var(--text-tertiary);">&bull;</span>
-              <span>Shared project checkpoints &amp; organizational memory</span>
-            </li>
-            <li class="pricing-feature-item">
-              <span style="color: var(--text-tertiary);">&bull;</span>
-              <span>Custom delegation &amp; approval workflows</span>
-            </li>
-          </ul>
-        </div>
-
-        <div style="margin-top: 32px;">
-          <a href="mailto:hayder@xorwia.com?subject=Business%20Plan%20Waitlist" class="btn btn-secondary" style="width: 100%;">
-            Register Interest for Business Plan
-          </a>
-        </div>
-      </div>
-
     </div>
 
-    <div style="text-align: center; margin-top: 48px; font-size: 14px; color: var(--text-tertiary);">
-      Subscription billed monthly in GBP (&pound;) upon launch checkout. Requires single verified Google account.
+    <div style="text-align: center; margin-top: 40px; font-size: 14px; color: var(--text-tertiary);">
+      Single verified Google account &middot; Hayder prepares; you approve.
     </div>
   </div>
 </section>
@@ -1586,8 +1663,9 @@ def render_about_page():
 <section class="section-hero">
   <div class="container-narrow">
     <h1 class="hero-title">About Hayder</h1>
+    <div class="hero-trust-line">Hayder prepares; you approve.</div>
     <p class="hero-subtitle">
-      Hayder is a personal operations assistant built by Xorwia to reduce cognitive overhead and help operators stay firmly in control.
+      A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action. Built by Xorwia to reduce cognitive overhead and help operators stay firmly in control.
     </p>
   </div>
 </section>
@@ -1618,7 +1696,7 @@ def render_about_page():
 
       <div class="card">
         <h2 class="card-title" style="margin-bottom: 12px;">Our Guiding Principle</h2>
-        <blockquote style="font-size: 18px; font-style: italic; color: var(--text-primary); border-left: 3px solid var(--google-blue); padding-left: 18px; margin: 16px 0;">
+        <blockquote style="font-size: 18px; font-style: italic; color: var(--text-primary); border-left: 3px solid var(--hayder-blue); padding-left: 18px; margin: 16px 0;">
           "Hayder remembers. Hayder prepares. You approve important actions."
         </blockquote>
         <p>
@@ -1657,8 +1735,9 @@ def render_support_page():
 <section class="section-hero">
   <div class="container-narrow">
     <h1 class="hero-title">Support &amp; Help</h1>
+    <div class="hero-trust-line">Hayder prepares; you approve.</div>
     <p class="hero-subtitle">
-      Direct assistance for your Hayder account and Google integration. Reach our core team at <a href="mailto:hayder@xorwia.com" style="color: var(--google-blue); font-weight: 500;">hayder@xorwia.com</a>.
+      Direct assistance for your Hayder account and Google integration. Reach our core team at <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue); font-weight: 500;">hayder@xorwia.com</a>.
     </p>
   </div>
 </section>
@@ -1696,7 +1775,7 @@ def render_support_page():
       <div class="faq-item">
         <h3 class="faq-question">2. Account &amp; Access</h3>
         <p class="faq-answer">
-          Hayder uses secure AWS Cognito authentication. You sign in with your email address and password. If you need to update credentials or encounter access issues, email us at <a href="mailto:hayder@xorwia.com" style="color: var(--google-blue);">hayder@xorwia.com</a>.
+          Hayder uses secure AWS Cognito authentication. You sign in with your email address and password. If you need to update credentials or encounter access issues, email us at <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue);">hayder@xorwia.com</a>.
         </p>
       </div>
 
@@ -1807,10 +1886,10 @@ def render_privacy_page():
     <div class="card" style="margin-bottom: 24px;">
       <h2 class="card-title">5. Your Rights &amp; Revocation</h2>
       <p style="margin-bottom: 12px;">
-        You have the right to access, rectify, or delete your personal data. You may disconnect your Google account from Hayder at any time or revoke access via <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener" style="color: var(--google-blue);">Google Security Permissions</a>.
+        You have the right to access, rectify, or delete your personal data. You may disconnect your Google account from Hayder at any time or revoke access via <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener" style="color: var(--hayder-blue);">Google Security Permissions</a>.
       </p>
       <p>
-        To request data deletion or account closure, contact us at <a href="mailto:hayder@xorwia.com" style="color: var(--google-blue);">hayder@xorwia.com</a>.
+        To request data deletion or account closure, contact us at <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue);">hayder@xorwia.com</a>.
       </p>
     </div>
 
@@ -1821,7 +1900,7 @@ def render_privacy_page():
       </p>
       <p style="margin-top: 8px;">
         <strong>Xorwia &middot; Hayder Operations</strong><br>
-        Email: <a href="mailto:hayder@xorwia.com" style="color: var(--google-blue);">hayder@xorwia.com</a>
+        Email: <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue);">hayder@xorwia.com</a>
       </p>
     </div>
 
@@ -1871,13 +1950,13 @@ def render_terms_page():
     <div class="card" style="margin-bottom: 24px;">
       <h2 class="card-title">3. Subscriptions &amp; Payments</h2>
       <p style="margin-bottom: 12px;">
-        <strong>Hayder Pro:</strong> Priced at &pound;19.99 per month. Commercial subscription checkout and billing will be connected separately upon formal product launch.
+        <strong>Hayder Pro:</strong> Priced at &pound;19.99 per month (or optional &pound;199 per year).
       </p>
       <p style="margin-bottom: 12px;">
-        <strong>Account Connection:</strong> Connecting your Google account via OAuth does not initiate an active paid subscription or billing trial at this time.
+        <strong>Account Connection:</strong> Connecting your Google account via OAuth provides access to Hayder operational capabilities for your account.
       </p>
       <p>
-        <strong>Cancellation:</strong> When commercial subscriptions are activated, you may cancel your subscription at any time, effective at the end of the current billing period.
+        <strong>Cancellation:</strong> You may disconnect your account or cancel your access at any time.
       </p>
     </div>
 
@@ -1905,7 +1984,7 @@ def render_terms_page():
       </p>
       <p style="margin-top: 8px;">
         <strong>Xorwia &middot; Legal</strong><br>
-        Email: <a href="mailto:hayder@xorwia.com" style="color: var(--google-blue);">hayder@xorwia.com</a>
+        Email: <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue);">hayder@xorwia.com</a>
       </p>
     </div>
 
