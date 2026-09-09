@@ -59,6 +59,16 @@ GOOGLE_CLIENT_SECRET_SECRET = os.environ.get(
     "hayder/google/client-secret",
 )
 
+XORWIA_BILLING_BASE_URL = os.environ.get(
+    "XORWIA_BILLING_BASE_URL",
+    "",
+)
+
+XORWIA_BILLING_SECRET_NAME = os.environ.get(
+    "XORWIA_BILLING_SECRET_NAME",
+    "hayder/xorwia/billing-service-secret",
+)
+
 GOOGLE_SCOPE = (
     "https://www.googleapis.com/auth/gmail.readonly "
     "https://www.googleapis.com/auth/gmail.send "
@@ -209,6 +219,208 @@ def get_authenticated_user(event):
     return (
         claims.get("email")
         or claims.get("sub")
+    )
+
+
+def get_cognito_sub(event):
+    """
+    Derive Cognito sub server-side from authenticated Cognito claims.
+    Never inspects browser-supplied headers, query parameters, or request body.
+    """
+    if not isinstance(event, dict):
+        return None
+
+    request_context = event.get("requestContext")
+    if not isinstance(request_context, dict):
+        if "sub" in event:
+            sub = event.get("sub")
+            return str(sub) if sub else None
+        return None
+
+    authorizer = request_context.get("authorizer")
+    if not isinstance(authorizer, dict):
+        return None
+
+    jwt_block = authorizer.get("jwt")
+    if isinstance(jwt_block, dict):
+        claims = jwt_block.get("claims")
+        if isinstance(claims, dict):
+            sub = claims.get("sub")
+            if sub:
+                return str(sub)
+
+    claims = authorizer.get("claims")
+    if isinstance(claims, dict):
+        sub = claims.get("sub")
+        if sub:
+            return str(sub)
+
+    return None
+
+
+def get_external_user_id(event):
+    """
+    Derive stable external product user ID: hayder:<cognito_sub>.
+    Email is contact metadata only, not the immutable identity.
+    """
+    sub = get_cognito_sub(event)
+    if not sub:
+        return None
+    return f"hayder:{sub}"
+
+
+def get_xorwia_billing_service_secret():
+    """
+    Retrieve dedicated Xorwia billing service credential from environment or Secrets Manager.
+    Does not hardcode secrets.
+    """
+    env_secret = os.environ.get("XORWIA_BILLING_SERVICE_SECRET")
+    if env_secret and env_secret.strip():
+        return env_secret.strip()
+
+    secret_name = (
+        os.environ.get("XORWIA_BILLING_SECRET_NAME")
+        or XORWIA_BILLING_SECRET_NAME
+        or "hayder/xorwia/billing-service-secret"
+    )
+
+    try:
+        secret = get_secret(secret_name)
+        if secret and isinstance(secret, str):
+            return secret.strip()
+        return secret
+    except Exception:
+        return None
+
+
+class XorwiaBillingClient:
+    """
+    Minimal Xorwia Billing client helper for entitlement lookup.
+    Xorwia owns all Stripe/billing. Hayder checks only central entitlement: HAYDER_PRO.
+    """
+
+    def __init__(
+        self,
+        base_url=None,
+        service_secret=None,
+        timeout=10,
+    ):
+        raw_url = (
+            base_url
+            if base_url is not None
+            else (
+                os.environ.get("XORWIA_BILLING_BASE_URL")
+                or XORWIA_BILLING_BASE_URL
+            )
+        )
+        self.base_url = (raw_url or "").rstrip("/")
+        self.service_secret = service_secret
+        self.timeout = timeout
+
+    def _resolve_service_secret(self):
+        if self.service_secret:
+            return self.service_secret
+        return get_xorwia_billing_service_secret()
+
+    def check_entitlement(
+        self,
+        external_user_id,
+        product="HAYDER_PRO",
+    ):
+        if not external_user_id:
+            return False
+
+        if not self.base_url:
+            print("[XORWIA BILLING CLIENT] XORWIA_BILLING_BASE_URL not configured")
+            return False
+
+        service_secret = self._resolve_service_secret()
+        if not service_secret:
+            print("[XORWIA BILLING CLIENT] XORWIA_BILLING_SERVICE_SECRET could not be resolved")
+            return False
+
+        if self.base_url.endswith("/api/billing/entitlement"):
+            endpoint_url = self.base_url
+        elif self.base_url.endswith("/api"):
+            endpoint_url = f"{self.base_url}/billing/entitlement"
+        else:
+            endpoint_url = f"{self.base_url}/api/billing/entitlement"
+
+        payload = {
+            "external_user_id": external_user_id,
+            "product": product,
+        }
+        body_bytes = json.dumps(payload).encode("utf-8")
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {service_secret}",
+            "User-Agent": "Hayder-Core/1.0",
+        }
+
+        req = urllib.request.Request(
+            endpoint_url,
+            data=body_bytes,
+            headers=headers,
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                status_code = resp.getcode()
+                raw_body = resp.read().decode("utf-8")
+                try:
+                    data = json.loads(raw_body)
+                except Exception:
+                    data = {}
+                return self._parse_response(data, status_code)
+
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 402, 403, 404):
+                return False
+            error_body = exc.read().decode("utf-8", errors="replace")
+            print(f"[XORWIA BILLING HTTP ERROR] {exc.code} {error_body}")
+            return False
+
+        except Exception as exc:
+            print(f"[XORWIA BILLING CLIENT ERROR] {exc}")
+            return False
+
+    def _parse_response(self, data, status_code=200):
+        if status_code != 200 or not isinstance(data, dict):
+            return False
+
+        return data.get("entitled") is True
+
+
+def check_hayder_pro(
+    external_user_id=None,
+    *,
+    event=None,
+    client=None,
+):
+    """
+    Check if the user has an active HAYDER_PRO central entitlement with Xorwia Billing.
+    Calls the Xorwia Billing entitlement endpoint for:
+    - external_user_id = hayder:<cognito_sub>
+    - product = HAYDER_PRO
+    """
+    if event is not None and external_user_id is None:
+        external_user_id = get_external_user_id(event)
+    elif isinstance(external_user_id, dict):
+        external_user_id = get_external_user_id(external_user_id)
+
+    if not external_user_id:
+        return False
+
+    if not external_user_id.startswith("hayder:"):
+        external_user_id = f"hayder:{external_user_id}"
+
+    billing_client = client or XorwiaBillingClient()
+    return billing_client.check_entitlement(
+        external_user_id=external_user_id,
+        product="HAYDER_PRO",
     )
 
 
@@ -4610,6 +4822,24 @@ def lambda_handler(
         method == "POST"
         and path == "/chat"
     ):
+
+        external_user_id = get_external_user_id(
+            event
+        )
+
+        if not external_user_id or not check_hayder_pro(
+            external_user_id
+        ):
+
+            return response(
+                403,
+                {
+                    "error":
+                        "SUBSCRIPTION_REQUIRED",
+                    "entitlement":
+                        "HAYDER_PRO",
+                },
+            )
 
         try:
 

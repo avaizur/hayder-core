@@ -3,6 +3,12 @@ Transform: AWS::Serverless-2016-10-31
 
 Description: Hayder Core - AI, memory, approvals, AWS read-only, Gmail read-only, authentication and voice
 
+Parameters:
+
+  XorwiaBillingBaseUrl:
+    Type: String
+    Default: ""
+
 Resources:
 
   HayderUserPool:
@@ -84,6 +90,8 @@ Resources:
           OPENAI_MODEL: gpt-5.6-luna
           GOOGLE_CLIENT_ID_SECRET: hayder/google/client-id
           GOOGLE_CLIENT_SECRET_SECRET: hayder/google/client-secret
+          XORWIA_BILLING_BASE_URL: !Ref XorwiaBillingBaseUrl
+          XORWIA_BILLING_SECRET_NAME: hayder/xorwia/billing-service-secret
 
       Policies:
         - Statement:
@@ -111,6 +119,7 @@ Resources:
                 - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:hayder/openai-api-key-*"
                 - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:hayder/google/client-id-*"
                 - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:hayder/google/client-secret-*"
+                - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:hayder/xorwia/billing-service-secret-*"
                 - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:hayder/google/users/*"
 
             - Effect: Allow
