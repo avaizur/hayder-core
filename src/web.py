@@ -218,6 +218,113 @@ main.main-content {
   text-align: center;
 }
 
+.hero-orb-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 26px;
+}
+
+.hero-orb {
+  width: 104px;
+  height: 104px;
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.hero-orb-ring {
+  position: absolute;
+  inset: 14px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background:
+    linear-gradient(#ffffff, #ffffff) padding-box,
+    linear-gradient(135deg, #7c3aed, #2563eb, #06b6d4) border-box;
+  box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.06);
+}
+
+.hero-orb-ring::after {
+  content: "";
+  position: absolute;
+  inset: 11px;
+  border-radius: 50%;
+  border: 1px dashed rgba(124, 58, 237, 0.28);
+}
+
+.hero-orbit {
+  position: absolute;
+  inset: 0;
+  animation: hayder-orbit-spin 20s linear infinite;
+}
+
+.hero-orbit.reverse {
+  animation-name: hayder-orbit-spin-reverse;
+}
+
+.hero-orbit.one { animation-duration: 18s; }
+.hero-orbit.two { animation-duration: 22s; }
+.hero-orbit.three { animation-duration: 26s; }
+.hero-orbit.four { animation-duration: 30s; }
+
+.hero-orbit .hero-orb-dot {
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+}
+
+.hero-orbit.one .hero-orb-dot {
+  width: 8px;
+  height: 8px;
+  background: #7c3aed;
+}
+
+.hero-orbit.two .hero-orb-dot {
+  top: 10px;
+  width: 7px;
+  height: 7px;
+  background: #2563eb;
+}
+
+.hero-orbit.three .hero-orb-dot {
+  top: 6px;
+  width: 7px;
+  height: 7px;
+  background: #06b6d4;
+}
+
+.hero-orbit.four .hero-orb-dot {
+  top: 14px;
+  width: 6px;
+  height: 6px;
+  background: #0d9488;
+}
+
+.hero-orb-core {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed, #2563eb, #06b6d4);
+  box-shadow: 0 0 18px rgba(124, 58, 237, 0.22);
+  animation: hayder-core-breathe 4s ease-in-out infinite;
+}
+
+@keyframes hayder-orbit-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes hayder-orbit-spin-reverse {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+
+@keyframes hayder-core-breathe {
+  0%, 100% { transform: scale(0.92); opacity: 0.8; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
 .container {
   max-width: var(--max-width);
   margin: 0 auto;
@@ -866,7 +973,7 @@ def render_header(current_path="/hayder"):
       {''.join(links_html)}
       <div class="nav-cta-group">
         <a href="/voice" class="btn btn-secondary btn-sm" aria-label="Open Voice Assistant">Open Voice</a>
-        <a href="/oauth/google/connect" class="btn btn-primary btn-sm" aria-label="Connect with Google">Connect with Google</a>
+        <a href="/voice" class="btn btn-primary btn-sm" aria-label="Connect with Google">Connect with Google</a>
       </div>
     </nav>
   </div>
@@ -962,19 +1069,30 @@ def render_home_page():
     content = f"""
 <section class="section-hero">
   <div class="container-narrow">
+    <div class="hero-orb-wrap" aria-hidden="true">
+      <div class="hero-orb">
+        <div class="hero-orbit one"><span class="hero-orb-dot"></span></div>
+        <div class="hero-orbit two reverse"><span class="hero-orb-dot"></span></div>
+        <div class="hero-orbit three"><span class="hero-orb-dot"></span></div>
+        <div class="hero-orbit four reverse"><span class="hero-orb-dot"></span></div>
+        <div class="hero-orb-ring"></div>
+        <span class="hero-orb-core"></span>
+      </div>
+    </div>
+
     <div style="display: inline-flex; align-items: center; gap: 8px; background: var(--bg-surface); border: 1px solid var(--border-subtle); padding: 6px 14px; border-radius: 9999px; font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-bottom: 24px;">
       <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--pulse-violet);"></span>
       Hayder by Xorwia &middot; Phase 1
     </div>
 
-    <h1 class="hero-title">Your day, prepared. You stay in control.</h1>
+    <h1 class="hero-title">Your day, <span style="color: var(--pulse-violet);">prepared.</span> You stay in <span style="color: var(--hayder-blue);">control.</span></h1>
     <div class="hero-trust-line">Hayder prepares; you approve.</div>
     <p class="hero-subtitle">
       A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.
     </p>
 
     <div class="hero-cta-group">
-      <a href="/oauth/google/connect" class="btn btn-google btn-lg" aria-label="Connect with Google">
+      <a href="/voice" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
@@ -1173,7 +1291,7 @@ def render_home_page():
       A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.
     </p>
     <div class="hero-cta-group">
-      <a href="/oauth/google/connect" class="btn btn-google btn-lg" aria-label="Connect with Google">
+      <a href="/voice" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
@@ -1381,7 +1499,7 @@ def render_features_page():
     </div>
 
     <div class="hero-cta-group" style="margin-top: 56px;">
-      <a href="/oauth/google/connect" class="btn btn-google btn-lg" aria-label="Connect with Google">
+      <a href="/voice" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
@@ -1477,7 +1595,7 @@ def render_how_it_works_page():
     </div>
 
     <div class="hero-cta-group" style="margin-top: 48px;">
-      <a href="/oauth/google/connect" class="btn btn-google btn-lg" aria-label="Connect with Google">
+      <a href="/voice" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
@@ -1601,7 +1719,7 @@ def render_pricing_page():
           Single Google account
         </div>
 
-        <a href="/oauth/google/connect" class="btn btn-google btn-lg" style="width: 100%; margin-bottom: 8px;" aria-label="Connect with Google">
+        <a href="/voice" class="btn btn-google btn-lg" style="width: 100%; margin-bottom: 8px;" aria-label="Connect with Google">
           {render_google_icon_svg()}
           Connect with Google
         </a>
