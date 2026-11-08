@@ -9,6 +9,24 @@ Parameters:
     Type: String
     Default: ""
 
+  CognitoDomainPrefix:
+    Type: String
+    Default: "hayder-auth-placeholder"
+
+  GoogleFederationClientId:
+    Type: String
+    Default: "GOOGLE_FEDERATION_CLIENT_ID_PLACEHOLDER"
+    NoEcho: true
+
+  GoogleFederationClientSecret:
+    Type: String
+    Default: "GOOGLE_FEDERATION_CLIENT_SECRET_PLACEHOLDER"
+    NoEcho: true
+
+  HayderCustomVoiceCallbackUrl:
+    Type: String
+    Default: "https://hayder.xorwia.com/voice"
+
 Resources:
 
   HayderUserPool:
@@ -20,8 +38,34 @@ Resources:
       AutoVerifiedAttributes:
         - email
 
+  HayderUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref HayderUserPool
+
+  # Cognito Google Federation IdP (Sign-in only: openid email profile).
+  # Separate from workspace Gmail/Calendar OAuth (/oauth/google/connect).
+  # NOTE: Do not auto-link Google identities to existing native Cognito users;
+  # identity/sub migration is flagged for separate review.
+  HayderGoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Properties:
+      UserPoolId: !Ref HayderUserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleFederationClientId
+        client_secret: !Ref GoogleFederationClientSecret
+        authorize_scopes: "openid email profile"
+      AttributeMapping:
+        email: email
+        email_verified: email_verified
+        name: name
+
   HayderUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
+    DependsOn: HayderGoogleIdentityProvider
     Properties:
       ClientName: hayder-client
       UserPoolId: !Ref HayderUserPool
@@ -29,6 +73,22 @@ Resources:
       ExplicitAuthFlows:
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+        - Google
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"
+        - !Ref HayderCustomVoiceCallbackUrl
+      LogoutURLs:
+        - !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"
+        - !Ref HayderCustomVoiceCallbackUrl
 
   HayderApi:
     Type: AWS::Serverless::HttpApi
@@ -246,6 +306,11 @@ Resources:
       MemorySize: 128
       Timeout: 5
 
+      Environment:
+        Variables:
+          COGNITO_DOMAIN: !Sub "https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
+          COGNITO_CLIENT_ID: !Ref HayderUserPoolClient
+
       Events:
 
         VoicePage:
@@ -360,3 +425,6 @@ Outputs:
 
   HayderUserPoolClientId:
     Value: !Ref HayderUserPoolClient
+
+  HayderCognitoHostedUiDomain:
+    Value: !Sub "https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"

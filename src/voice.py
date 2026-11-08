@@ -16,9 +16,27 @@ Preserves existing Phase 1 voice functionality and backend routing contracts.
 Dispatches public website routes to web.py.
 """
 
+import json
+import os
 import web
 
+DEFAULT_COGNITO_DOMAIN = "https://hayder-auth-placeholder.auth.eu-west-2.amazoncognito.com"
+DEFAULT_COGNITO_CLIENT_ID = "COGNITO_CLIENT_ID_PLACEHOLDER"
+
+
+def get_cognito_auth_config():
+    domain = (os.environ.get("COGNITO_DOMAIN") or DEFAULT_COGNITO_DOMAIN).strip().rstrip("/")
+    client_id = (os.environ.get("COGNITO_CLIENT_ID") or DEFAULT_COGNITO_CLIENT_ID).strip()
+    return {
+        "cognito_domain": domain,
+        "cognito_client_id": client_id,
+    }
+
+
 def render_voice_page():
+    auth_cfg = get_cognito_auth_config()
+    cognito_domain_js = json.dumps(auth_cfg["cognito_domain"])
+    cognito_client_id_js = json.dumps(auth_cfg["cognito_client_id"])
     html = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -420,6 +438,13 @@ button {
       Sign in to Hayder
     </button>
 
+    <button
+        type="button"
+        class="secondary"
+        id="googleSignInButton">
+      Continue with Google
+    </button>
+
     <div id="loginStatus"></div>
   </div>
 
@@ -481,6 +506,11 @@ button {
 
 <script>
 
+const COGNITO_DOMAIN = """ + cognito_domain_js + r""";
+const COGNITO_CLIENT_ID = """ + cognito_client_id_js + r""";
+const PKCE_VERIFIER_KEY = "hayder_pkce_verifier";
+const OAUTH_STATE_KEY = "hayder_oauth_state";
+
 const loginCard =
     document.getElementById("loginCard");
 
@@ -489,6 +519,9 @@ const assistantCard =
 
 const loginButton =
     document.getElementById("loginButton");
+
+const googleSignInButton =
+    document.getElementById("googleSignInButton");
 
 const googleButton =
     document.getElementById("googleButton");
@@ -599,6 +632,8 @@ function clearSession() {
     sessionStorage.removeItem(
         "hayder_expires_at"
     );
+
+    clearPkceState();
 }
 
 
@@ -630,6 +665,10 @@ function showLogin() {
     loginCard.classList.remove(
         "hidden"
     );
+
+    if (googleSignInButton) {
+        googleSignInButton.disabled = false;
+    }
 
     setVoiceVisualState("idle");
 }
@@ -1492,6 +1531,13 @@ micButton.addEventListener(
 
 async function restoreSession() {
 
+    const handledCallback =
+        await handleGoogleSignInCallback();
+
+    if (handledCallback) {
+        return;
+    }
+
     const refreshToken =
         sessionStorage.getItem(
             "hayder_refresh_token"
@@ -1515,6 +1561,215 @@ async function restoreSession() {
 
         showLogin();
     }
+}
+
+
+function stripTrailingSlashes(url) {
+    let result = String(url || "");
+    while (result.endsWith("/")) {
+        result = result.slice(0, -1);
+    }
+    return result;
+}
+
+
+function base64UrlEncode(bytes) {
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary)
+        .split("+").join("-")
+        .split("/").join("_")
+        .replace(/=+$/, "");
+}
+
+
+function generateRandomUrlSafeString(byteLength) {
+    const bytes = new Uint8Array(byteLength || 32);
+    window.crypto.getRandomValues(bytes);
+    return base64UrlEncode(bytes);
+}
+
+
+async function computePkceChallenge(verifier) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(verifier);
+    const digest = await window.crypto.subtle.digest("SHA-256", data);
+    return base64UrlEncode(new Uint8Array(digest));
+}
+
+
+function clearPkceState() {
+    sessionStorage.removeItem(PKCE_VERIFIER_KEY);
+    sessionStorage.removeItem(OAUTH_STATE_KEY);
+}
+
+
+function getVoiceRedirectUri() {
+    return window.location.origin + "/voice";
+}
+
+
+async function startGoogleSignIn() {
+    if (
+        !COGNITO_DOMAIN
+        || COGNITO_DOMAIN.includes("placeholder")
+        || !COGNITO_CLIENT_ID
+        || COGNITO_CLIENT_ID.includes("PLACEHOLDER")
+    ) {
+        loginStatus.textContent =
+            "Google sign-in is not configured yet.";
+        return;
+    }
+
+    if (!window.crypto || !window.crypto.subtle) {
+        loginStatus.textContent =
+            "Secure Web Crypto API is required for Google sign-in.";
+        return;
+    }
+
+    if (googleSignInButton) {
+        googleSignInButton.disabled = true;
+    }
+    loginStatus.textContent = "Redirecting to Google sign-in...";
+
+    try {
+        const verifier = generateRandomUrlSafeString(32);
+        const state = generateRandomUrlSafeString(24);
+        const challenge = await computePkceChallenge(verifier);
+
+        sessionStorage.setItem(PKCE_VERIFIER_KEY, verifier);
+        sessionStorage.setItem(OAUTH_STATE_KEY, state);
+
+        const params = new URLSearchParams({
+            identity_provider: "Google",
+            response_type: "code",
+            client_id: COGNITO_CLIENT_ID,
+            redirect_uri: getVoiceRedirectUri(),
+            scope: "openid email profile",
+            state: state,
+            code_challenge: challenge,
+            code_challenge_method: "S256"
+        });
+
+        window.location.href =
+            stripTrailingSlashes(COGNITO_DOMAIN)
+            + "/oauth2/authorize?"
+            + params.toString();
+    } catch (error) {
+        clearPkceState();
+        if (googleSignInButton) {
+            googleSignInButton.disabled = false;
+        }
+        loginStatus.textContent =
+            "Google sign-in error: " + error.message;
+    }
+}
+
+
+async function handleGoogleSignInCallback() {
+    const search = window.location.search || "";
+    if (!search) {
+        return false;
+    }
+
+    const params = new URLSearchParams(search);
+    const code = params.get("code");
+    const returnedState = params.get("state");
+    const oauthError = params.get("error");
+    const oauthErrorDesc = params.get("error_description");
+
+    if (!code && !oauthError) {
+        return false;
+    }
+
+    if (window.history && window.history.replaceState) {
+        window.history.replaceState({}, "", window.location.pathname || "/voice");
+    }
+
+    const expectedState = sessionStorage.getItem(OAUTH_STATE_KEY);
+    const verifier = sessionStorage.getItem(PKCE_VERIFIER_KEY);
+    clearPkceState();
+
+    if (oauthError) {
+        showLogin();
+        loginStatus.textContent =
+            "Google sign-in failed: " + (oauthErrorDesc || oauthError);
+        return true;
+    }
+
+    if (!expectedState || !returnedState || returnedState !== expectedState) {
+        showLogin();
+        loginStatus.textContent =
+            "Google sign-in failed: invalid OAuth state.";
+        return true;
+    }
+
+    if (!verifier) {
+        showLogin();
+        loginStatus.textContent =
+            "Google sign-in failed: missing PKCE verifier.";
+        return true;
+    }
+
+    loginStatus.textContent = "Completing Google sign-in...";
+
+    try {
+        const body = new URLSearchParams({
+            grant_type: "authorization_code",
+            client_id: COGNITO_CLIENT_ID,
+            code: code,
+            redirect_uri: getVoiceRedirectUri(),
+            code_verifier: verifier
+        });
+
+        const response = await fetch(
+            stripTrailingSlashes(COGNITO_DOMAIN) + "/oauth2/token",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                body: body.toString()
+            }
+        );
+
+        const data = await response.json().catch(function() {
+            return null;
+        });
+
+        if (!response.ok || !data || !data.id_token) {
+            throw new Error(
+                (data && (data.error_description || data.error))
+                || "Token exchange failed."
+            );
+        }
+
+        saveSession({
+            id_token: data.id_token,
+            refresh_token: data.refresh_token,
+            expires_in: data.expires_in || 3600
+        });
+
+        loginStatus.textContent = "";
+        showAssistant();
+        return true;
+    } catch (error) {
+        clearSession();
+        showLogin();
+        loginStatus.textContent =
+            "Google sign-in error: " + error.message;
+        return true;
+    }
+}
+
+
+if (googleSignInButton) {
+    googleSignInButton.addEventListener(
+        "click",
+        startGoogleSignIn
+    );
 }
 
 
