@@ -420,6 +420,11 @@ button {
     <h2 style="font-size: 20px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">Sign in</h2>
     <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: 12px;">Sign in to your Hayder account to speak or command.</p>
 
+    <div id="checkoutNotice" class="hidden" style="margin-bottom: 14px; padding: 12px 14px; border-radius: 10px; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; font-size: 13px; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+      <span id="checkoutNoticeText"></span>
+      <button id="cancelPendingCheckoutBtn" type="button" class="secondary" style="width: auto; margin-top: 0; padding: 6px 10px; font-size: 12px;">Clear</button>
+    </div>
+
     <input
         id="username"
         type="email"
@@ -457,6 +462,11 @@ button {
         <span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981;"></span>
         Operational
       </span>
+    </div>
+
+    <div id="billingUpgradeBanner" class="reconnect-banner hidden" style="background: #eff6ff; border-color: #bfdbfe; color: #1e3a8a;">
+      <span>Hayder Pro subscription is required to use assistant commands.</span>
+      <a href="/hayder/pricing" class="btn btn-primary btn-sm">View Pricing</a>
     </div>
 
     <textarea
@@ -510,6 +520,7 @@ const COGNITO_DOMAIN = """ + cognito_domain_js + r""";
 const COGNITO_CLIENT_ID = """ + cognito_client_id_js + r""";
 const PKCE_VERIFIER_KEY = "hayder_pkce_verifier";
 const OAUTH_STATE_KEY = "hayder_oauth_state";
+const PENDING_CHECKOUT_PLAN_KEY = "hayder_pending_checkout_plan";
 
 const loginCard =
     document.getElementById("loginCard");
@@ -564,6 +575,221 @@ const reconnectBanner =
 
 const reconnectBannerBtn =
     document.getElementById("reconnectBannerBtn");
+
+const checkoutNotice =
+    document.getElementById("checkoutNotice");
+
+const checkoutNoticeText =
+    document.getElementById("checkoutNoticeText");
+
+const cancelPendingCheckoutBtn =
+    document.getElementById("cancelPendingCheckoutBtn");
+
+const billingUpgradeBanner =
+    document.getElementById("billingUpgradeBanner");
+
+
+function normalizeCheckoutPlan(value) {
+    if (typeof value !== "string") return null;
+    const cleaned = value.trim().toLowerCase();
+    if (cleaned === "monthly" || cleaned === "annual") {
+        return cleaned;
+    }
+    return null;
+}
+
+
+function isValidStripeCheckoutUrl(rawUrl) {
+    if (typeof rawUrl !== "string") return false;
+    const trimmed = rawUrl.trim();
+    if (!trimmed || /[\s\\]/.test(trimmed)) return false;
+    try {
+        const parsed = new URL(trimmed);
+        return (
+            parsed.protocol === "https:"
+            && parsed.hostname === "checkout.stripe.com"
+            && !parsed.username
+            && !parsed.password
+            && (!parsed.port || parsed.port === "443")
+            && parsed.pathname.length > 1
+        );
+    } catch (e) {
+        return false;
+    }
+}
+
+
+function getPendingCheckoutPlan() {
+    return normalizeCheckoutPlan(
+        sessionStorage.getItem(PENDING_CHECKOUT_PLAN_KEY)
+    );
+}
+
+
+function setPendingCheckoutPlan(plan) {
+    const normalized = normalizeCheckoutPlan(plan);
+    if (normalized) {
+        sessionStorage.setItem(PENDING_CHECKOUT_PLAN_KEY, normalized);
+    }
+    updateCheckoutNotice();
+}
+
+
+function clearPendingCheckoutPlan() {
+    sessionStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
+    updateCheckoutNotice();
+}
+
+
+function updateCheckoutNotice() {
+    if (!checkoutNotice || !checkoutNoticeText) return;
+    const plan = getPendingCheckoutPlan();
+    if (!plan) {
+        checkoutNotice.classList.add("hidden");
+        checkoutNoticeText.textContent = "";
+        return;
+    }
+    const label =
+        plan === "annual"
+            ? "Hayder Pro Annual (£99/year, proposed)"
+            : "Hayder Pro Monthly (£9.99/month, proposed)";
+    checkoutNoticeText.textContent =
+        "Selected plan: " + label + ". Sign in to continue to secure checkout.";
+    checkoutNotice.classList.remove("hidden");
+}
+
+
+function capturePendingCheckoutFromUrl() {
+    const search = window.location.search || "";
+    if (!search) {
+        updateCheckoutNotice();
+        return;
+    }
+    const params = new URLSearchParams(search);
+    const plan = normalizeCheckoutPlan(params.get("checkout"));
+    if (plan) {
+        sessionStorage.setItem(PENDING_CHECKOUT_PLAN_KEY, plan);
+        if (
+            !params.get("code")
+            && !params.get("error")
+            && window.history
+            && window.history.replaceState
+        ) {
+            window.history.replaceState({}, "", window.location.pathname || "/voice");
+        }
+    }
+    updateCheckoutNotice();
+}
+
+
+async function startBillingCheckout(rawPlan) {
+    const plan = normalizeCheckoutPlan(rawPlan);
+    if (!plan) {
+        return false;
+    }
+
+    if (statusBox) {
+        statusBox.textContent = "Starting secure Stripe Checkout...";
+    }
+
+    try {
+        let token = await getValidIdToken();
+
+        let response = await fetch(
+            "/billing/checkout",
+            {
+                method: "POST",
+                headers: {
+                    "Authorization": "Bearer " + token,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    billingInterval: plan
+                })
+            }
+        );
+
+        if (response.status === 401) {
+            const refreshed = await refreshSession();
+            if (!refreshed) {
+                setPendingCheckoutPlan(plan);
+                showLogin();
+                if (loginStatus) {
+                    loginStatus.textContent = "Please sign in again to continue to checkout.";
+                }
+                return false;
+            }
+            token = await getValidIdToken();
+            response = await fetch(
+                "/billing/checkout",
+                {
+                    method: "POST",
+                    headers: {
+                        "Authorization": "Bearer " + token,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        billingInterval: plan
+                    })
+                }
+            );
+        }
+
+        const data = await response.json().catch(function() {
+            return null;
+        });
+
+        if (!response.ok) {
+            throw new Error(
+                (data && data.error)
+                || "Unable to create checkout session."
+            );
+        }
+
+        if (!data || !isValidStripeCheckoutUrl(data.url)) {
+            throw new Error("Invalid checkout URL returned.");
+        }
+
+        clearPendingCheckoutPlan();
+        window.location.href = data.url;
+        return true;
+    } catch (error) {
+        const msg = (error && error.message) || "Unable to create checkout session.";
+        if (msg.toLowerCase().includes("sign in")) {
+            clearSession();
+            setPendingCheckoutPlan(plan);
+            showLogin();
+            if (loginStatus) {
+                loginStatus.textContent = "Please sign in to continue to checkout.";
+            }
+            return false;
+        }
+        if (statusBox) {
+            statusBox.textContent = "Checkout error: " + msg;
+        }
+        setVoiceVisualState("error");
+        return false;
+    }
+}
+
+
+async function maybeResumePendingCheckout() {
+    const plan = getPendingCheckoutPlan();
+    if (!plan) {
+        return false;
+    }
+    return await startBillingCheckout(plan);
+}
+
+
+if (cancelPendingCheckoutBtn) {
+    cancelPendingCheckoutBtn.addEventListener(
+        "click",
+        function() {
+            clearPendingCheckoutPlan();
+        }
+    );
+}
 
 
 function setVoiceVisualState(state) {
@@ -730,6 +956,8 @@ async function login() {
         loginStatus.textContent = "";
 
         showAssistant();
+
+        await maybeResumePendingCheckout();
 
     } catch (error) {
 
@@ -1203,6 +1431,19 @@ async function sendToHayder(message) {
 
         if (!response.ok) {
 
+            if (
+                response.status === 403
+                && data
+                && data.error === "SUBSCRIPTION_REQUIRED"
+            ) {
+                if (billingUpgradeBanner) {
+                    billingUpgradeBanner.classList.remove("hidden");
+                }
+                throw new Error(
+                    "Hayder Pro subscription required. Visit Pricing to subscribe."
+                );
+            }
+
             const hasReply =
                 Boolean(
                     data
@@ -1353,6 +1594,7 @@ logoutButton.addEventListener(
         window.speechSynthesis.cancel();
 
         clearSession();
+        clearPendingCheckoutPlan();
 
         showLogin();
     }
@@ -1531,10 +1773,34 @@ micButton.addEventListener(
 
 async function restoreSession() {
 
+    capturePendingCheckoutFromUrl();
+
     const handledCallback =
         await handleGoogleSignInCallback();
 
     if (handledCallback) {
+        return;
+    }
+
+    const existingIdToken =
+        sessionStorage.getItem(
+            "hayder_id_token"
+        );
+
+    const existingExpiresAt =
+        Number(
+            sessionStorage.getItem(
+                "hayder_expires_at"
+            )
+            || 0
+        );
+
+    if (
+        existingIdToken
+        && Date.now() < (existingExpiresAt - 60 * 1000)
+    ) {
+        showAssistant();
+        await maybeResumePendingCheckout();
         return;
     }
 
@@ -1556,6 +1822,7 @@ async function restoreSession() {
     if (ok) {
 
         showAssistant();
+        await maybeResumePendingCheckout();
 
     } else {
 
@@ -1754,6 +2021,9 @@ async function handleGoogleSignInCallback() {
 
         loginStatus.textContent = "";
         showAssistant();
+        if (typeof maybeResumePendingCheckout === "function") {
+            await maybeResumePendingCheckout();
+        }
         return true;
     } catch (error) {
         clearSession();

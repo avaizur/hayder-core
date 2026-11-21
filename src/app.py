@@ -17,6 +17,7 @@ from urllib.parse import (
     quote,
     unquote,
     urlencode,
+    urlparse,
 )
 
 import boto3
@@ -68,6 +69,14 @@ XORWIA_BILLING_SECRET_NAME = os.environ.get(
     "XORWIA_BILLING_SECRET_NAME",
     "hayder/xorwia/billing-service-secret",
 )
+
+HAYDER_PUBLIC_BASE_URL = os.environ.get(
+    "HAYDER_PUBLIC_BASE_URL",
+    "",
+)
+
+HAYDER_PRO_PRODUCT = "HAYDER_PRO"
+VALID_BILLING_INTERVALS = ("monthly", "annual")
 
 GOOGLE_SCOPE = (
     "https://www.googleapis.com/auth/gmail.readonly "
@@ -293,10 +302,210 @@ def get_xorwia_billing_service_secret():
         return None
 
 
+class XorwiaCheckoutError(Exception):
+    def __init__(self, status_code, public_message):
+        super().__init__(public_message)
+        self.status_code = status_code
+        self.public_message = public_message
+
+
+def normalize_billing_interval(value):
+    """
+    Strictly normalize billing interval to 'monthly' or 'annual'.
+    Rejects any other input.
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().lower()
+    if cleaned in VALID_BILLING_INTERVALS:
+        return cleaned
+    return None
+
+
+def extract_bearer_token(event):
+    """
+    Extract Authorization: Bearer <token> from HTTP API event headers (case-insensitive).
+    """
+    if not isinstance(event, dict):
+        return None
+    headers = event.get("headers") or {}
+    if not isinstance(headers, dict):
+        return None
+    auth_header = None
+    for key, val in headers.items():
+        if isinstance(key, str) and key.lower() == "authorization":
+            auth_header = val
+            break
+    if not isinstance(auth_header, str):
+        return None
+    parts = auth_header.strip().split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    token = parts[1].strip()
+    if not token or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in token):
+        return None
+    return token
+
+
+def verify_bearer_matches_cognito_sub(token, expected_sub):
+    """
+    Defense-in-depth consistency check that the Cognito JWT forwarded to Xorwia
+    belongs to the same Cognito subject already verified by API Gateway's
+    HayderJwtAuthorizer. Xorwia independently verifies the RS256 signature via JWKS.
+    """
+    if not isinstance(token, str) or not isinstance(expected_sub, str) or not expected_sub.strip():
+        return False
+    parts = token.split(".")
+    if len(parts) != 3 or not all(parts):
+        return False
+    try:
+        segment = parts[1]
+        padding = "=" * (-len(segment) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(segment + padding).decode("utf-8"))
+        if not isinstance(payload, dict):
+            return False
+        token_use = payload.get("token_use")
+        if token_use not in ("id", "access"):
+            return False
+        token_sub = payload.get("sub")
+        return isinstance(token_sub, str) and token_sub.strip() == expected_sub.strip()
+    except Exception:
+        return False
+
+
+def is_valid_stripe_checkout_url(url):
+    """
+    Strictly validate that an upstream checkout URL is an HTTPS Stripe Checkout URL
+    hosted on checkout.stripe.com without userinfo, backslashes, or control chars.
+    """
+    if not isinstance(url, str):
+        return False
+    trimmed = url.strip()
+    if not trimmed:
+        return False
+    if any(ord(ch) <= 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in trimmed):
+        return False
+    try:
+        parsed = urlparse(trimmed)
+        port = parsed.port
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    if parsed.hostname != "checkout.stripe.com":
+        return False
+    if parsed.netloc.lower() not in ("checkout.stripe.com", "checkout.stripe.com:443"):
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    if port not in (None, 443):
+        return False
+    if not parsed.path or not parsed.path.startswith("/") or len(parsed.path) < 2:
+        return False
+    return True
+
+
+def is_safe_upstream_billing_url(url):
+    """
+    Ensure Xorwia billing base/endpoint URL uses HTTPS (or HTTP only for localhost/127.0.0.1)
+    to prevent urllib.request.urlopen from ever accessing file:// or other non-HTTP schemes.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return False
+    trimmed = url.strip()
+    if any(ord(ch) <= 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in trimmed):
+        return False
+    try:
+        parsed = urlparse(trimmed)
+        _ = parsed.port
+    except Exception:
+        return False
+    if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        return False
+    is_local = parsed.hostname in ("localhost", "127.0.0.1")
+    return parsed.scheme == "https" or (parsed.scheme == "http" and is_local)
+
+
+def get_checkout_return_origin(event):
+    """
+    Derive safe server-side origin for Stripe Checkout success/cancel returns.
+    Never reads return URLs from browser body, query parameters, or X-Forwarded-Host.
+    """
+    configured = (
+        os.environ.get("HAYDER_PUBLIC_BASE_URL", HAYDER_PUBLIC_BASE_URL) or ""
+    ).strip().rstrip("/")
+
+    if configured:
+        if any(ord(ch) <= 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in configured):
+            raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
+        try:
+            parsed = urlparse(configured)
+            _ = parsed.port
+        except Exception:
+            raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
+        is_local = parsed.hostname in ("localhost", "127.0.0.1")
+        protocol_ok = parsed.scheme == "https" or (parsed.scheme == "http" and is_local)
+        if (
+            not protocol_ok
+            or not parsed.netloc
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    domain = (
+        (event.get("requestContext") or {}).get("domainName")
+        if isinstance(event, dict)
+        else None
+    )
+    if not domain and isinstance(event, dict):
+        headers = event.get("headers") or {}
+        if isinstance(headers, dict):
+            for key, val in headers.items():
+                if isinstance(key, str) and key.lower() == "host":
+                    domain = val
+                    break
+
+    if not isinstance(domain, str) or not domain.strip():
+        raise XorwiaCheckoutError(500, "Unable to determine checkout return origin.")
+
+    domain = domain.strip()
+    if any(
+        ord(ch) <= 0x20 or ord(ch) == 0x7F or ch in ("/", "\\", "@", "?", "#")
+        for ch in domain
+    ) or ".." in domain:
+        raise XorwiaCheckoutError(400, "Invalid request host.")
+
+    try:
+        parsed_host = urlparse(f"https://{domain}")
+        _ = parsed_host.port
+    except Exception:
+        raise XorwiaCheckoutError(400, "Invalid request host.")
+
+    if (
+        parsed_host.scheme != "https"
+        or not parsed_host.hostname
+        or not re.fullmatch(r"[a-zA-Z0-9.-]+", parsed_host.hostname)
+        or parsed_host.username is not None
+        or parsed_host.password is not None
+        or parsed_host.path
+        or parsed_host.query
+        or parsed_host.fragment
+    ):
+        raise XorwiaCheckoutError(400, "Invalid request host.")
+
+    return f"https://{parsed_host.netloc}"
+
+
 class XorwiaBillingClient:
     """
-    Minimal Xorwia Billing client helper for entitlement lookup.
-    Xorwia owns all Stripe/billing. Hayder checks only central entitlement: HAYDER_PRO.
+    Minimal Xorwia Billing client helper for entitlement lookup and checkout delegation.
+    Xorwia owns all Stripe/billing. Hayder delegates HAYDER_PRO checkout and entitlement checks.
     """
 
     def __init__(
@@ -321,6 +530,138 @@ class XorwiaBillingClient:
         if self.service_secret:
             return self.service_secret
         return get_xorwia_billing_service_secret()
+
+    def _checkout_endpoint_url(self):
+        if self.base_url.endswith("/api/create-checkout-session"):
+            return self.base_url
+        if self.base_url.endswith("/api/billing/entitlement"):
+            return (
+                self.base_url[: -len("/billing/entitlement")]
+                + "/create-checkout-session"
+            )
+        if self.base_url.endswith("/api"):
+            return f"{self.base_url}/create-checkout-session"
+        return f"{self.base_url}/api/create-checkout-session"
+
+    def create_checkout_session(
+        self,
+        cognito_bearer_token,
+        billing_interval,
+        success_url,
+        cancel_url,
+    ):
+        normalized_interval = normalize_billing_interval(billing_interval)
+        if not normalized_interval:
+            raise XorwiaCheckoutError(
+                400,
+                "Invalid or missing billing interval. Must be monthly or annual.",
+            )
+
+        if not cognito_bearer_token or not isinstance(cognito_bearer_token, str):
+            raise XorwiaCheckoutError(
+                401,
+                "Valid Cognito bearer token is required.",
+            )
+
+        if not self.base_url:
+            print("[XORWIA BILLING CLIENT] XORWIA_BILLING_BASE_URL not configured")
+            raise XorwiaCheckoutError(
+                503,
+                "Checkout service is not configured.",
+            )
+
+        endpoint_url = self._checkout_endpoint_url()
+        if not is_safe_upstream_billing_url(endpoint_url):
+            print("[XORWIA BILLING CLIENT] Invalid XORWIA_BILLING_BASE_URL scheme")
+            raise XorwiaCheckoutError(
+                503,
+                "Checkout service is not configured.",
+            )
+
+        payload = {
+            "product": HAYDER_PRO_PRODUCT,
+            "billingInterval": normalized_interval,
+            "successUrl": success_url,
+            "cancelUrl": cancel_url,
+        }
+        body_bytes = json.dumps(payload).encode("utf-8")
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {cognito_bearer_token}",
+            "User-Agent": "Hayder-Core/1.0",
+        }
+
+        req = urllib.request.Request(
+            endpoint_url,
+            data=body_bytes,
+            headers=headers,
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                status_code = resp.getcode()
+                raw_body = resp.read().decode("utf-8")
+                try:
+                    data = json.loads(raw_body)
+                except Exception:
+                    data = {}
+
+            if status_code != 200 or not isinstance(data, dict):
+                raise XorwiaCheckoutError(
+                    502,
+                    "Checkout service returned an unexpected response.",
+                )
+
+            session_id = data.get("id")
+            checkout_url = data.get("url")
+
+            if (
+                not isinstance(session_id, str)
+                or not session_id.strip()
+                or not is_valid_stripe_checkout_url(checkout_url)
+            ):
+                print("[XORWIA CHECKOUT] Rejected invalid or non-Stripe checkout URL")
+                raise XorwiaCheckoutError(
+                    502,
+                    "Checkout service returned an invalid checkout URL.",
+                )
+
+            return {
+                "id": session_id.strip(),
+                "url": checkout_url.strip(),
+                "product": HAYDER_PRO_PRODUCT,
+                "billing_interval": normalized_interval,
+            }
+
+        except XorwiaCheckoutError:
+            raise
+
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise XorwiaCheckoutError(
+                    401,
+                    "Session authentication failed. Please sign in again.",
+                )
+            if exc.code == 400:
+                raise XorwiaCheckoutError(
+                    400,
+                    "Unable to create checkout session for the selected plan.",
+                )
+            print(f"[XORWIA CHECKOUT HTTP ERROR] status={exc.code}")
+            raise XorwiaCheckoutError(
+                502,
+                "Checkout service is temporarily unavailable. Please try again.",
+            )
+
+        except Exception as exc:
+            print(f"[XORWIA CHECKOUT CLIENT ERROR] {type(exc).__name__}")
+            raise XorwiaCheckoutError(
+                502,
+                "Checkout service is temporarily unavailable. Please try again.",
+            )
 
     def check_entitlement(
         self,
@@ -392,6 +733,121 @@ class XorwiaBillingClient:
             return False
 
         return data.get("entitled") is True
+
+
+def create_billing_checkout(event, client=None):
+    """
+    Create a HAYDER_PRO Stripe Checkout session via Xorwia server-to-server.
+    Requires verified Cognito login, ignores browser-supplied user IDs/prices/URLs,
+    and validates the returned Stripe Checkout URL before responding.
+    """
+    cognito_sub = get_cognito_sub(event)
+    external_user_id = get_external_user_id(event)
+    if not cognito_sub or not external_user_id:
+        return response(
+            401,
+            {"error": "Authenticated user not found"},
+            headers={"cache-control": "no-store"},
+        )
+
+    bearer_token = extract_bearer_token(event)
+    if not bearer_token or not verify_bearer_matches_cognito_sub(
+        bearer_token,
+        cognito_sub,
+    ):
+        return response(
+            401,
+            {"error": "Valid Cognito bearer token is required"},
+            headers={"cache-control": "no-store"},
+        )
+
+    try:
+        payload = get_body(event)
+    except json.JSONDecodeError:
+        return response(
+            400,
+            {"error": "Invalid JSON body"},
+            headers={"cache-control": "no-store"},
+        )
+
+    if not isinstance(payload, dict):
+        return response(
+            400,
+            {"error": "Invalid request body"},
+            headers={"cache-control": "no-store"},
+        )
+
+    raw_interval = payload.get("billingInterval")
+    if raw_interval is None:
+        raw_interval = payload.get("billing_interval")
+    if raw_interval is None:
+        raw_interval = payload.get("plan")
+
+    billing_interval = normalize_billing_interval(raw_interval)
+    if not billing_interval:
+        return response(
+            400,
+            {
+                "error": (
+                    "Invalid or missing billing interval. "
+                    "Must be monthly or annual."
+                )
+            },
+            headers={"cache-control": "no-store"},
+        )
+
+    try:
+        origin = get_checkout_return_origin(event)
+        success_url = f"{origin}/billing/success"
+        cancel_url = f"{origin}/billing/cancel"
+
+        billing_client = client or XorwiaBillingClient()
+        session = billing_client.create_checkout_session(
+            cognito_bearer_token=bearer_token,
+            billing_interval=billing_interval,
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+        return response(
+            200,
+            session,
+            headers={"cache-control": "no-store"},
+        )
+    except XorwiaCheckoutError as exc:
+        return response(
+            exc.status_code,
+            {"error": exc.public_message},
+            headers={"cache-control": "no-store"},
+        )
+    except Exception:
+        return response(
+            502,
+            {"error": "Checkout service is temporarily unavailable. Please try again."},
+            headers={"cache-control": "no-store"},
+        )
+
+
+def billing_status(event, client=None):
+    """
+    Return the authenticated user's current HAYDER_PRO entitlement status from Xorwia.
+    """
+    external_user_id = get_external_user_id(event)
+    if not external_user_id:
+        return response(
+            401,
+            {"error": "Authenticated user not found"},
+            headers={"cache-control": "no-store"},
+        )
+
+    entitled = check_hayder_pro(external_user_id, client=client)
+    return response(
+        200,
+        {
+            "entitled": bool(entitled),
+            "product": HAYDER_PRO_PRODUCT,
+        },
+        headers={"cache-control": "no-store"},
+    )
 
 
 def check_hayder_pro(
@@ -4743,6 +5199,22 @@ def lambda_handler(
                     "not found"
             },
         )
+
+    # BILLING CHECKOUT (HAYDER_PRO via Xorwia server-to-server)
+
+    if (
+        method == "POST"
+        and path == "/billing/checkout"
+    ):
+        return create_billing_checkout(event)
+
+    # BILLING ENTITLEMENT STATUS
+
+    if (
+        method == "GET"
+        and path == "/billing/status"
+    ):
+        return billing_status(event)
 
     # GOOGLE CONNECT
 

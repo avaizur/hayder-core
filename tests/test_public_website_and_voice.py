@@ -16,7 +16,7 @@ Validates:
 2. Brand, product, and legal decisions:
    - Xorwia company/legal entity
    - Support contact hayder@xorwia.com
-   - Hayder Pro launch price £19.99/month (optional £199/year)
+   - Hayder Pro proposed price £9.99/month (optional £99/year)
    - Single Pro plan only (no Basic or Business tiers)
    - Absence of unsupported compliance claims (no SOC 2, no GDPR certification badges, no fake end-to-end encryption)
 3. Voice UI states:
@@ -160,12 +160,12 @@ class PublicWebsiteAndVoiceTests(unittest.TestCase):
         self.assertNotIn("end-to-end encryption", html.lower())
 
     def test_pricing_page_tier_and_trial(self):
-        """Pricing specifies £19.99/month, optional £199/year, 'Connect with Google' CTA, single Pro plan only, and no enforced trial claims."""
+        """Pricing specifies £9.99/month and £99/year (proposed), single Pro plan only, and no enforced trial claims."""
         res = voice.lambda_handler({"rawPath": "/hayder/pricing"}, {})
         html = res["body"]
 
-        self.assertIn("&pound;19.99", html)
-        self.assertIn("&pound;199", html)
+        self.assertIn("&pound;9.99", html)
+        self.assertIn("&pound;99", html)
         self.assertIn("Hayder Pro", html)
         self.assertNotIn("Hayder Business", html)
         self.assertNotIn("Coming later", html)
@@ -206,7 +206,8 @@ class PublicWebsiteAndVoiceTests(unittest.TestCase):
         terms_res = voice.lambda_handler({"rawPath": "/terms"}, {})
         self.assertEqual(terms_res["statusCode"], 200)
         self.assertIn("Terms of Service", terms_res["body"])
-        self.assertIn("&pound;19.99", terms_res["body"])
+        self.assertIn("&pound;9.99", terms_res["body"])
+        self.assertIn("&pound;99", terms_res["body"])
         self.assertNotIn("14-day free trial", terms_res["body"])
         self.assertNotIn("14-day", terms_res["body"])
         self.assertIn("Subscriptions &amp; Payments", terms_res["body"])

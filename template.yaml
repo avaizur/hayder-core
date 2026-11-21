@@ -9,6 +9,10 @@ Parameters:
     Type: String
     Default: ""
 
+  HayderPublicBaseUrl:
+    Type: String
+    Default: ""
+
   CognitoDomainPrefix:
     Type: String
     Default: "hayder-auth-placeholder"
@@ -152,6 +156,7 @@ Resources:
           GOOGLE_CLIENT_SECRET_SECRET: hayder/google/client-secret
           XORWIA_BILLING_BASE_URL: !Ref XorwiaBillingBaseUrl
           XORWIA_BILLING_SECRET_NAME: hayder/xorwia/billing-service-secret
+          HAYDER_PUBLIC_BASE_URL: !Ref HayderPublicBaseUrl
 
       Policies:
         - Statement:
@@ -263,6 +268,20 @@ Resources:
             ApiId: !Ref HayderApi
             Path: /approval/{approval_id}/reject
             Method: POST
+
+        BillingCheckout:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /billing/checkout
+            Method: POST
+
+        BillingStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /billing/status
+            Method: GET
 
   HayderAuthFunction:
     Type: AWS::Serverless::Function
@@ -399,6 +418,24 @@ Resources:
           Properties:
             ApiId: !Ref HayderApi
             Path: /terms
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        BillingSuccessPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /billing/success
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        BillingCancelPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /billing/cancel
             Method: GET
             Auth:
               Authorizer: NONE

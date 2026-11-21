@@ -6,11 +6,13 @@ Implements clean, minimal, Google-like public pages for Hayder by Xorwia:
 - /hayder/features (Phase 1 capabilities)
 - /hayder/how-it-works (6-step architecture & workflow)
 - /hayder/security (Google OAuth, approval-before-action, privacy)
-- /hayder/pricing (Hayder Pro £19.99/mo, Business plan coming later)
+- /hayder/pricing (Hayder Pro £9.99/mo or £99/yr, proposed)
 - /hayder/about (Xorwia product, reduce busywork, user control)
 - /hayder/support (hayder@xorwia.com, 5 common help areas)
 - /privacy (Shared Xorwia privacy policy)
 - /terms (Shared Xorwia terms of service)
+- /billing/success (Stripe Checkout return confirmation)
+- /billing/cancel (Stripe Checkout cancellation return)
 """
 
 import html
@@ -1699,32 +1701,66 @@ def render_pricing_page():
 
 <section class="section" style="padding-top: 0;">
   <div class="container">
-    <div style="max-width: 520px; margin: 0 auto;">
+    <div style="max-width: 600px; margin: 0 auto;">
 
       <!-- Hayder Pro Tier (Single Phase 1 Plan) -->
       <div class="pricing-card">
-        <div class="pricing-badge">Phase 1 Launch</div>
-        <h2 style="font-size: 24px; font-weight: 700; color: var(--text-primary);">Hayder Pro &mdash; &pound;19.99/month</h2>
+        <div class="pricing-badge">Phase 1 &middot; Proposed Pricing</div>
+        <h2 style="font-size: 24px; font-weight: 700; color: var(--text-primary);">Hayder Pro</h2>
         <p style="font-size: 15px; color: var(--text-secondary); margin-top: 4px;">
           For founders, leaders, and operators who need complete daily control over communications.
         </p>
 
-        <div class="pricing-price">
-          &pound;19.99 <span class="pricing-interval">/ month</span>
-        </div>
-        <div style="font-size: 14px; color: var(--text-secondary); margin-top: -16px; margin-bottom: 20px;">
-          Optional annual &mdash; &pound;199/year
-        </div>
-        <div class="pricing-trial-note">
-          Single Google account
+        <div class="grid-2" style="gap: 16px; margin: 24px 0 12px;">
+          <div style="border: 1px solid var(--border-subtle); border-radius: 12px; padding: 20px; background: var(--bg-surface); display: flex; flex-direction: column; justify-content: space-between; gap: 14px;">
+            <div>
+              <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary);">Monthly (Proposed)</div>
+              <div class="pricing-price" style="font-size: 34px; margin: 8px 0 2px;">
+                &pound;9.99 <span class="pricing-interval">/ month</span>
+              </div>
+              <div style="font-size: 13px; color: var(--text-secondary);">Flexible monthly billing</div>
+            </div>
+            <a
+              id="checkoutMonthlyBtn"
+              href="/voice?checkout=monthly"
+              class="btn btn-primary btn-lg checkout-plan-btn"
+              data-billing-interval="monthly"
+              style="width: 100%;"
+              aria-label="Choose Hayder Pro Monthly at £9.99 per month"
+            >
+              Choose Monthly &mdash; &pound;9.99/mo
+            </a>
+          </div>
+
+          <div style="border: 2px solid var(--hayder-blue); border-radius: 12px; padding: 20px; background: #ffffff; display: flex; flex-direction: column; justify-content: space-between; gap: 14px;">
+            <div>
+              <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hayder-blue);">Annual (Proposed) &middot; Save 17%</div>
+              <div class="pricing-price" style="font-size: 34px; margin: 8px 0 2px;">
+                &pound;99 <span class="pricing-interval">/ year</span>
+              </div>
+              <div style="font-size: 13px; color: var(--text-secondary);">Billed annually (&pound;8.25/mo equivalent)</div>
+            </div>
+            <a
+              id="checkoutAnnualBtn"
+              href="/voice?checkout=annual"
+              class="btn btn-secondary btn-lg checkout-plan-btn"
+              data-billing-interval="annual"
+              style="width: 100%; border-color: var(--hayder-blue); color: var(--hayder-blue);"
+              aria-label="Choose Hayder Pro Annual at £99 per year"
+            >
+              Choose Annual &mdash; &pound;99/yr
+            </a>
+          </div>
         </div>
 
-        <a href="/voice" class="btn btn-google btn-lg" style="width: 100%; margin-bottom: 8px;" aria-label="Connect with Google">
-          {render_google_icon_svg()}
-          Connect with Google
-        </a>
+        <div id="checkoutStatus" role="status" aria-live="polite" style="display: none; margin: 12px 0 16px; padding: 12px 14px; border-radius: 8px; font-size: 14px; background: var(--bg-surface); border: 1px solid var(--border-subtle); color: var(--text-secondary); text-align: center;"></div>
+
+        <div class="pricing-trial-note" style="margin-top: 8px; margin-bottom: 16px;">
+          Single Google account &middot; Verified sign-in required before checkout
+        </div>
+
         <div style="font-size: 12px; color: var(--text-tertiary); text-align: center; margin-bottom: 24px;">
-          Connects securely via official Google OAuth
+          Sign in with email or Google on Hayder, then complete subscription billing securely via Xorwia &amp; Stripe Checkout.
         </div>
 
         <div style="font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-primary); margin-bottom: 12px;">
@@ -1770,7 +1806,174 @@ def render_pricing_page():
   </div>
 </section>
 """
-    return render_html_shell("Pricing — Hayder by Xorwia", content, current_path="/hayder/pricing")
+
+    extra_scripts = """
+<script>
+const PENDING_CHECKOUT_PLAN_KEY = "hayder_pending_checkout_plan";
+
+function normalizeCheckoutPlan(value) {
+  if (typeof value !== "string") return null;
+  const cleaned = value.trim().toLowerCase();
+  if (cleaned === "monthly" || cleaned === "annual") return cleaned;
+  return null;
+}
+
+function isValidStripeCheckoutUrl(rawUrl) {
+  if (typeof rawUrl !== "string") return false;
+  const trimmed = rawUrl.trim();
+  if (!trimmed || /[\\s\\\\]/.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return (
+      parsed.protocol === "https:"
+      && parsed.hostname === "checkout.stripe.com"
+      && !parsed.username
+      && !parsed.password
+      && (!parsed.port || parsed.port === "443")
+      && parsed.pathname.length > 1
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
+function setPricingCheckoutStatus(message, isError) {
+  const box = document.getElementById("checkoutStatus");
+  if (!box) return;
+  if (!message) {
+    box.style.display = "none";
+    box.textContent = "";
+    return;
+  }
+  box.style.display = "block";
+  box.textContent = message;
+  box.style.color = isError ? "#991b1b" : "var(--text-secondary)";
+  box.style.background = isError ? "#fef2f2" : "var(--bg-surface)";
+  box.style.borderColor = isError ? "#fecaca" : "var(--border-subtle)";
+}
+
+function setCheckoutButtonsDisabled(disabled) {
+  document.querySelectorAll(".checkout-plan-btn").forEach((btn) => {
+    btn.style.pointerEvents = disabled ? "none" : "";
+    btn.style.opacity = disabled ? "0.65" : "";
+    btn.setAttribute("aria-disabled", disabled ? "true" : "false");
+  });
+}
+
+async function refreshPricingSession() {
+  const refreshToken = sessionStorage.getItem("hayder_refresh_token");
+  if (!refreshToken) return null;
+  try {
+    const resp = await fetch("/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken })
+    });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data || !data.id_token) {
+      sessionStorage.removeItem("hayder_id_token");
+      sessionStorage.removeItem("hayder_refresh_token");
+      sessionStorage.removeItem("hayder_expires_at");
+      return null;
+    }
+    const expiresAt = Date.now() + ((data.expires_in || 3600) * 1000);
+    sessionStorage.setItem("hayder_id_token", data.id_token);
+    sessionStorage.setItem("hayder_expires_at", String(expiresAt));
+    return data.id_token;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function getValidPricingIdToken() {
+  let idToken = sessionStorage.getItem("hayder_id_token");
+  const expiresAt = Number(sessionStorage.getItem("hayder_expires_at") || 0);
+  const refreshEarly = 5 * 60 * 1000;
+  if (!idToken || Date.now() >= (expiresAt - refreshEarly)) {
+    idToken = await refreshPricingSession();
+  }
+  return idToken || null;
+}
+
+function redirectToLoginForCheckout(plan) {
+  sessionStorage.setItem(PENDING_CHECKOUT_PLAN_KEY, plan);
+  window.location.href = "/voice?checkout=" + encodeURIComponent(plan);
+}
+
+async function startPricingCheckout(rawPlan) {
+  const plan = normalizeCheckoutPlan(rawPlan);
+  if (!plan) {
+    setPricingCheckoutStatus("Please choose either Monthly or Annual.", true);
+    return;
+  }
+
+  setCheckoutButtonsDisabled(true);
+  setPricingCheckoutStatus("Checking your sign-in session...", false);
+
+  try {
+    let token = await getValidPricingIdToken();
+    if (!token) {
+      redirectToLoginForCheckout(plan);
+      return;
+    }
+
+    setPricingCheckoutStatus("Preparing secure Stripe Checkout...", false);
+
+    let resp = await fetch("/billing/checkout", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ billingInterval: plan })
+    });
+
+    if (resp.status === 401) {
+      token = await refreshPricingSession();
+      if (!token) {
+        redirectToLoginForCheckout(plan);
+        return;
+      }
+      resp = await fetch("/billing/checkout", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + token,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ billingInterval: plan })
+      });
+      if (resp.status === 401) {
+        redirectToLoginForCheckout(plan);
+        return;
+      }
+    }
+
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      throw new Error((data && data.error) || "Unable to start checkout right now.");
+    }
+
+    if (!data || !isValidStripeCheckoutUrl(data.url)) {
+      throw new Error("Received an invalid checkout redirect URL.");
+    }
+
+    sessionStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
+    window.location.href = data.url;
+  } catch (err) {
+    setCheckoutButtonsDisabled(false);
+    setPricingCheckoutStatus((err && err.message) || "Unable to start checkout.", true);
+  }
+}
+
+document.querySelectorAll(".checkout-plan-btn").forEach((btn) => {
+  btn.addEventListener("click", (event) => {
+    event.preventDefault();
+    startPricingCheckout(btn.getAttribute("data-billing-interval"));
+  });
+});
+</script>
+"""
+    return render_html_shell("Pricing — Hayder by Xorwia", content, current_path="/hayder/pricing", extra_scripts=extra_scripts)
 
 # ---------------------------------------------------------------------------
 # PAGE 6: /hayder/about
@@ -2068,7 +2271,7 @@ def render_terms_page():
     <div class="card" style="margin-bottom: 24px;">
       <h2 class="card-title">3. Subscriptions &amp; Payments</h2>
       <p style="margin-bottom: 12px;">
-        <strong>Hayder Pro:</strong> Priced at &pound;19.99 per month (or optional &pound;199 per year).
+        <strong>Hayder Pro:</strong> Proposed pricing at &pound;9.99 per month (or optional &pound;99 per year).
       </p>
       <p style="margin-bottom: 12px;">
         <strong>Account Connection:</strong> Connecting your Google account via OAuth provides access to Hayder operational capabilities for your account.
@@ -2112,6 +2315,182 @@ def render_terms_page():
     return render_html_shell("Terms of Service — Xorwia", content, current_path="/terms")
 
 # ---------------------------------------------------------------------------
+# BILLING RETURN PAGES: /billing/success & /billing/cancel
+# ---------------------------------------------------------------------------
+
+def render_billing_success_page():
+    content = """
+<section class="section-hero" style="padding-bottom: 40px;">
+  <div class="container-narrow">
+    <h1 class="hero-title">Checkout complete</h1>
+    <div class="hero-trust-line">Hayder Pro &middot; Hayder prepares; you approve.</div>
+    <p class="hero-subtitle">
+      Thank you for subscribing. We are confirming your Hayder Pro entitlement with Xorwia Billing.
+    </p>
+  </div>
+</section>
+
+<section class="section" style="padding-top: 0;">
+  <div class="container-narrow">
+    <div class="card" style="text-align: center; padding: 36px 28px;">
+      <div id="billingSuccessStatus" role="status" aria-live="polite" style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 10px;">
+        Confirming your Hayder Pro subscription...
+      </div>
+      <p id="billingSuccessDetail" style="font-size: 14px; color: var(--text-secondary); margin-bottom: 24px;">
+        Access activates automatically once Stripe confirms payment with Xorwia Billing.
+      </p>
+      <div class="hero-cta-group" style="margin-bottom: 16px;">
+        <a href="/voice" class="btn btn-primary btn-lg">Open Hayder Voice</a>
+        <button id="recheckBillingStatusBtn" type="button" class="btn btn-secondary btn-lg">Check status again</button>
+      </div>
+      <p style="font-size: 13px; color: var(--text-tertiary);">
+        Need help? Contact <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue);">hayder@xorwia.com</a>.
+      </p>
+    </div>
+  </div>
+</section>
+"""
+    extra_scripts = """
+<script>
+const PENDING_CHECKOUT_PLAN_KEY = "hayder_pending_checkout_plan";
+sessionStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
+
+async function refreshBillingStatusToken() {
+  const refreshToken = sessionStorage.getItem("hayder_refresh_token");
+  if (!refreshToken) return null;
+  try {
+    const resp = await fetch("/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken })
+    });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data || !data.id_token) return null;
+    sessionStorage.setItem("hayder_id_token", data.id_token);
+    sessionStorage.setItem("hayder_expires_at", String(Date.now() + ((data.expires_in || 3600) * 1000)));
+    return data.id_token;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function getBillingStatusToken() {
+  let token = sessionStorage.getItem("hayder_id_token");
+  const expiresAt = Number(sessionStorage.getItem("hayder_expires_at") || 0);
+  if (!token || Date.now() >= (expiresAt - 5 * 60 * 1000)) {
+    token = await refreshBillingStatusToken();
+  }
+  return token || null;
+}
+
+let billingPollTimer = null;
+
+async function checkBillingActivation(attempt) {
+  if (billingPollTimer) {
+    clearTimeout(billingPollTimer);
+    billingPollTimer = null;
+  }
+  const statusEl = document.getElementById("billingSuccessStatus");
+  const detailEl = document.getElementById("billingSuccessDetail");
+  const maxAttempts = 5;
+
+  let token = await getBillingStatusToken();
+  if (!token) {
+    statusEl.textContent = "Checkout submitted. Sign in to use Hayder Pro.";
+    detailEl.textContent = "Open Hayder Voice and sign in with your Cognito account to start using Hayder Pro.";
+    return;
+  }
+
+  try {
+    let resp = await fetch("/billing/status", {
+      method: "GET",
+      headers: { "Authorization": "Bearer " + token }
+    });
+    if (resp.status === 401) {
+      token = await refreshBillingStatusToken();
+      if (!token) {
+        statusEl.textContent = "Checkout submitted. Sign in to use Hayder Pro.";
+        detailEl.textContent = "Open Hayder Voice and sign in with your Cognito account to start using Hayder Pro.";
+        return;
+      }
+      resp = await fetch("/billing/status", {
+        method: "GET",
+        headers: { "Authorization": "Bearer " + token }
+      });
+      if (resp.status === 401) {
+        statusEl.textContent = "Checkout submitted. Sign in to use Hayder Pro.";
+        detailEl.textContent = "Open Hayder Voice and sign in with your Cognito account to start using Hayder Pro.";
+        return;
+      }
+    }
+    const data = await resp.json().catch(() => null);
+    if (resp.ok && data && data.entitled === true) {
+      statusEl.textContent = "Hayder Pro is active on your account.";
+      detailEl.textContent = "You can now open Hayder Voice and connect your single Google account.";
+      return;
+    }
+    if (attempt < maxAttempts) {
+      statusEl.textContent = "Confirming your Hayder Pro subscription...";
+      detailEl.textContent = "Waiting for Stripe confirmation (" + attempt + "/" + maxAttempts + ").";
+      billingPollTimer = setTimeout(() => checkBillingActivation(attempt + 1), 2000);
+      return;
+    }
+    statusEl.textContent = "Payment received — activation still processing.";
+    detailEl.textContent = "Your subscription is still being confirmed. Click Check status again in a moment or open Hayder Voice.";
+  } catch (e) {
+    statusEl.textContent = "Could not verify activation status right now.";
+    detailEl.textContent = "Please click Check status again or open Hayder Voice.";
+  }
+}
+
+const recheckBtn = document.getElementById("recheckBillingStatusBtn");
+if (recheckBtn) {
+  recheckBtn.addEventListener("click", () => checkBillingActivation(1));
+}
+checkBillingActivation(1);
+</script>
+"""
+    return render_html_shell("Checkout Complete — Hayder by Xorwia", content, current_path="/billing/success", extra_scripts=extra_scripts)
+
+
+def render_billing_cancel_page():
+    content = """
+<section class="section-hero" style="padding-bottom: 40px;">
+  <div class="container-narrow">
+    <h1 class="hero-title">Checkout cancelled</h1>
+    <div class="hero-trust-line">No charge was made.</div>
+    <p class="hero-subtitle">
+      You can choose a Hayder Pro plan whenever you are ready, or return to your Hayder account.
+    </p>
+  </div>
+</section>
+
+<section class="section" style="padding-top: 0;">
+  <div class="container-narrow">
+    <div class="card" style="text-align: center; padding: 36px 28px;">
+      <p style="font-size: 15px; color: var(--text-secondary); margin-bottom: 24px;">
+        Your Stripe Checkout session was cancelled and your subscription has not been started.
+      </p>
+      <div class="hero-cta-group" style="margin-bottom: 16px;">
+        <a href="/hayder/pricing" class="btn btn-primary btn-lg">Return to Pricing</a>
+        <a href="/voice" class="btn btn-secondary btn-lg">Open Hayder Voice</a>
+      </div>
+      <p style="font-size: 13px; color: var(--text-tertiary);">
+        Questions? Email <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue);">hayder@xorwia.com</a>.
+      </p>
+    </div>
+  </div>
+</section>
+"""
+    extra_scripts = """
+<script>
+sessionStorage.removeItem("hayder_pending_checkout_plan");
+</script>
+"""
+    return render_html_shell("Checkout Cancelled — Hayder by Xorwia", content, current_path="/billing/cancel", extra_scripts=extra_scripts)
+
+
+# ---------------------------------------------------------------------------
 # ROUTE DISPATCHER
 # ---------------------------------------------------------------------------
 
@@ -2134,7 +2513,13 @@ ROUTES = {
     "/privacy/": render_privacy_page,
     "/terms": render_terms_page,
     "/terms/": render_terms_page,
+    "/billing/success": render_billing_success_page,
+    "/billing/success/": render_billing_success_page,
+    "/billing/cancel": render_billing_cancel_page,
+    "/billing/cancel/": render_billing_cancel_page,
 }
+
+NO_STORE_PATHS = {"/billing/success", "/billing/cancel"}
 
 def render_page(path):
     """
@@ -2145,11 +2530,16 @@ def render_page(path):
     renderer = ROUTES.get(path) or ROUTES.get(normalized_path)
 
     if renderer:
+        cache_control = (
+            "no-store"
+            if normalized_path in NO_STORE_PATHS
+            else "public, max-age=300"
+        )
         return {
             "statusCode": 200,
             "headers": {
                 "content-type": "text/html; charset=utf-8",
-                "cache-control": "public, max-age=300",
+                "cache-control": cache_control,
             },
             "body": renderer(),
         }
