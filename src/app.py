@@ -204,6 +204,13 @@ def get_body(event):
     return json.loads(raw)
 
 
+def _is_configured_identity_value(value):
+    if not isinstance(value, str):
+        return False
+    cleaned = value.strip()
+    return bool(cleaned) and "PLACEHOLDER" not in cleaned.upper()
+
+
 def get_authenticated_user(event):
 
     claims = (
@@ -224,6 +231,23 @@ def get_authenticated_user(event):
             {},
         )
     )
+
+    claim_sub = claims.get("sub")
+    founder_sub = (os.environ.get("FOUNDER_NATIVE_SUB") or "").strip()
+    founder_canonical_email = (os.environ.get("FOUNDER_NATIVE_EMAIL") or "").strip()
+
+    if (
+        isinstance(claim_sub, str)
+        and claim_sub.strip()
+        and _is_configured_identity_value(founder_sub)
+        and hmac.compare_digest(claim_sub.strip(), founder_sub)
+    ):
+        # Pin the founder's email-keyed Hayder storage partition (memory, approvals,
+        # Gmail OAuth secret) to the canonical native email even if cross-email
+        # Google login updates Cognito's JWT email claim. Fail closed if missing.
+        if not _is_configured_identity_value(founder_canonical_email):
+            return None
+        return founder_canonical_email
 
     return (
         claims.get("email")

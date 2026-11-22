@@ -31,7 +31,71 @@ Parameters:
     Type: String
     Default: "https://xorwia.com/hayder/voice"
 
+  FounderGoogleSubject:
+    Type: String
+    Default: ""
+    Description: Explicit allowlisted Google provider subject (sub) mapped to the founder native Cognito user.
+
+  FounderGoogleEmail:
+    Type: String
+    Default: ""
+    Description: Expected verified Google email for the allowlisted founder Google login.
+
+  FounderNativeUsername:
+    Type: String
+    Default: ""
+    Description: Known CONFIRMED native Cognito Username for the founder account.
+
+  FounderNativeSub:
+    Type: String
+    Default: ""
+    Description: Known native Cognito sub UUID for the founder account (verified before linking and used to pin canonical storage keys).
+
+  FounderNativeEmail:
+    Type: String
+    Default: ""
+    Description: Existing verified native Cognito email for the founder account (canonical partition key for Hayder memory, approvals and Gmail OAuth).
+
+  AllowFounderCrossEmailLink:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "false"
+      - "true"
+    Description: Explicit opt-in required to allow cross-email founder Google linking (fails closed by default to prevent silent Cognito email attribute overwrite).
+
 Resources:
+
+  HayderPreSignUpFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  HayderPreSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: pre_signup.lambda_handler
+      Runtime: python3.13
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt HayderPreSignUpFunctionRole.Arn
+      Environment:
+        Variables:
+          FOUNDER_GOOGLE_SUBJECT: !Ref FounderGoogleSubject
+          FOUNDER_GOOGLE_EMAIL: !Ref FounderGoogleEmail
+          FOUNDER_NATIVE_USERNAME: !Ref FounderNativeUsername
+          FOUNDER_NATIVE_SUB: !Ref FounderNativeSub
+          FOUNDER_NATIVE_EMAIL: !Ref FounderNativeEmail
+          ALLOW_FOUNDER_CROSS_EMAIL_LINK: !Ref AllowFounderCrossEmailLink
 
   HayderUserPool:
     Type: AWS::Cognito::UserPool
@@ -41,6 +105,32 @@ Resources:
         - email
       AutoVerifiedAttributes:
         - email
+      LambdaConfig:
+        PreSignUp: !GetAtt HayderPreSignUpFunction.Arn
+
+  HayderPreSignUpCognitoPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: HayderPreSignUpCognitoLinkPolicy
+      Roles:
+        - !Ref HayderPreSignUpFunctionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:ListUsers
+              - cognito-idp:AdminGetUser
+              - cognito-idp:AdminLinkProviderForUser
+            Resource: !GetAtt HayderUserPool.Arn
+
+  HayderPreSignUpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HayderPreSignUpFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt HayderUserPool.Arn
 
   HayderUserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
@@ -50,8 +140,8 @@ Resources:
 
   # Cognito Google Federation IdP (Sign-in only: openid email profile).
   # Separate from workspace Gmail/Calendar OAuth (/oauth/google/connect).
-  # NOTE: Do not auto-link Google identities to existing native Cognito users;
-  # identity/sub migration is flagged for separate review.
+  # PreSignUp trigger fails closed on email-only matches and links only
+  # explicitly allowlisted verified Google subjects to confirmed native users.
   HayderGoogleIdentityProvider:
     Type: AWS::Cognito::UserPoolIdentityProvider
     Properties:
@@ -159,6 +249,8 @@ Resources:
           XORWIA_BILLING_BASE_URL: !Ref XorwiaBillingBaseUrl
           XORWIA_BILLING_SECRET_NAME: hayder/xorwia/billing-service-secret
           HAYDER_PUBLIC_BASE_URL: !Ref HayderPublicBaseUrl
+          FOUNDER_NATIVE_SUB: !Ref FounderNativeSub
+          FOUNDER_NATIVE_EMAIL: !Ref FounderNativeEmail
 
       Policies:
         - Statement:

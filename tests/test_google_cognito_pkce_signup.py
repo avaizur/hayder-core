@@ -6,8 +6,8 @@ Validates:
    - Placeholder parameters (no real secrets)
    - HayderUserPoolDomain and HayderGoogleIdentityProvider (openid email profile)
    - HayderUserPoolClient preserves USER_PASSWORD_AUTH & REFRESH_TOKEN_AUTH while enabling code flow + Google IdP
-   - CallbackURLs / LogoutURLs include API Gateway /voice and https://hayder.xorwia.com/voice
-   - No automatic PreSignUp identity linking trigger configured
+   - CallbackURLs / LogoutURLs include API Gateway /voice and https://xorwia.com/hayder/voice
+   - Secure fail-closed PreSignUp Google linking Lambda with least-privilege IAM scoped to HayderUserPool
 2. voice.py PKCE flow & separation from Gmail/Calendar OAuth:
    - Preserves email/password login (#username, #password, #loginButton, /auth/login)
    - Preserves Gmail/Calendar OAuth (#googleButton, /oauth/google/connect)
@@ -68,10 +68,23 @@ class GoogleCognitoPkceSignupTests(unittest.TestCase):
         self.assertIn('!Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"', template_text)
         self.assertIn("!Ref HayderCustomVoiceCallbackUrl", template_text)
 
-        # Strictly no automatic PreSignUp account linking
-        self.assertNotIn("PreSignUp", template_text)
-        self.assertNotIn("admin_link_provider_for_user", template_text)
-        self.assertNotIn("AdminLinkProviderForUser", template_text)
+        # Secure fail-closed PreSignUp Google linking with least-privilege IAM
+        self.assertIn("FounderGoogleSubject:", template_text)
+        self.assertIn("FounderGoogleEmail:", template_text)
+        self.assertIn("FounderNativeUsername:", template_text)
+        self.assertIn("FounderNativeSub:", template_text)
+        self.assertIn("FounderNativeEmail:", template_text)
+        self.assertIn("AllowFounderCrossEmailLink:", template_text)
+        self.assertIn("HayderPreSignUpFunction:", template_text)
+        self.assertIn("Handler: pre_signup.lambda_handler", template_text)
+        self.assertIn("PreSignUp: !GetAtt HayderPreSignUpFunction.Arn", template_text)
+        self.assertIn("HayderPreSignUpCognitoPolicy:", template_text)
+        self.assertIn("- cognito-idp:ListUsers", template_text)
+        self.assertIn("- cognito-idp:AdminGetUser", template_text)
+        self.assertIn("- cognito-idp:AdminLinkProviderForUser", template_text)
+        self.assertIn("Resource: !GetAtt HayderUserPool.Arn", template_text)
+        self.assertIn("HayderPreSignUpInvokePermission:", template_text)
+        self.assertIn("SourceArn: !GetAtt HayderUserPool.Arn", template_text)
 
     def test_voice_page_preserves_password_login_and_gmail_oauth_separation(self):
         res = voice.lambda_handler({"rawPath": "/voice"}, {})
