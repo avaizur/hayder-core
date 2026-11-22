@@ -43,7 +43,7 @@ class GoogleCognitoPkceSignupTests(unittest.TestCase):
         self.assertIn("GoogleFederationClientSecret:", template_text)
         self.assertIn('Default: "GOOGLE_FEDERATION_CLIENT_SECRET_PLACEHOLDER"', template_text)
         self.assertIn("HayderCustomVoiceCallbackUrl:", template_text)
-        self.assertIn('Default: "https://hayder.xorwia.com/voice"', template_text)
+        self.assertIn('Default: "https://xorwia.com/hayder/voice"', template_text)
 
         # Cognito Domain & Google IdP resources
         self.assertIn("HayderUserPoolDomain:", template_text)

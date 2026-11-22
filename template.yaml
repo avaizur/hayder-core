@@ -11,7 +11,7 @@ Parameters:
 
   HayderPublicBaseUrl:
     Type: String
-    Default: ""
+    Default: "https://xorwia.com/hayder"
 
   CognitoDomainPrefix:
     Type: String
@@ -29,7 +29,7 @@ Parameters:
 
   HayderCustomVoiceCallbackUrl:
     Type: String
-    Default: "https://hayder.xorwia.com/voice"
+    Default: "https://xorwia.com/hayder/voice"
 
 Resources:
 
@@ -90,9 +90,11 @@ Resources:
       CallbackURLs:
         - !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"
         - !Ref HayderCustomVoiceCallbackUrl
+        - "https://www.xorwia.com/hayder/voice"
       LogoutURLs:
         - !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"
         - !Ref HayderCustomVoiceCallbackUrl
+        - "https://www.xorwia.com/hayder/voice"
 
   HayderApi:
     Type: AWS::Serverless::HttpApi
@@ -329,8 +331,72 @@ Resources:
         Variables:
           COGNITO_DOMAIN: !Sub "https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
           COGNITO_CLIENT_ID: !Ref HayderUserPoolClient
+          HAYDER_PUBLIC_BASE_URL: !Ref HayderPublicBaseUrl
 
       Events:
+
+        HayderRootPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        FeaturesPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /features
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        HowItWorksPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /how-it-works
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        SecurityPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /security
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        PricingPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /pricing
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        AboutPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /about
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+        SupportPage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HayderApi
+            Path: /support
+            Method: GET
+            Auth:
+              Authorizer: NONE
 
         VoicePage:
           Type: HttpApi

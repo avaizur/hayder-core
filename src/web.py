@@ -16,6 +16,89 @@ Implements clean, minimal, Google-like public pages for Hayder by Xorwia:
 """
 
 import html
+import json
+import os
+import re
+from urllib.parse import urlparse
+
+SUBPATH_HOSTS = ("xorwia.com", "www.xorwia.com")
+DEFAULT_SUBPATH_PREFIX = "/hayder"
+SAFE_BASE_PATH_RE = re.compile(r"^/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
+
+
+def normalize_base_path(base_path):
+    if not isinstance(base_path, str):
+        return ""
+    cleaned = base_path.strip().rstrip("/")
+    if not cleaned:
+        return ""
+    if not SAFE_BASE_PATH_RE.fullmatch(cleaned):
+        return ""
+    return cleaned
+
+
+def resolve_base_path(event=None):
+    """
+    Resolve Hayder's public mount base path (e.g. '/hayder' when served at
+    https://xorwia.com/hayder via API Gateway base-path mapping, or '' on
+    direct execute-api / root hosts).
+    """
+    configured_host = None
+    configured_path = ""
+    configured = (os.environ.get("HAYDER_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if configured and not any(ord(ch) <= 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in configured):
+        try:
+            parsed = urlparse(configured)
+            _ = parsed.port
+            is_local = parsed.hostname in ("localhost", "127.0.0.1")
+            protocol_ok = parsed.scheme == "https" or (parsed.scheme == "http" and is_local)
+            raw_path = parsed.path or ""
+            if (
+                protocol_ok
+                and parsed.netloc
+                and parsed.hostname
+                and parsed.username is None
+                and parsed.password is None
+                and ".." not in raw_path
+                and "//" not in raw_path
+                and not parsed.query
+                and not parsed.fragment
+            ):
+                configured_host = parsed.hostname.lower()
+                configured_path = normalize_base_path(raw_path)
+        except Exception:
+            pass
+
+    request_host = None
+    if isinstance(event, dict):
+        domain = (event.get("requestContext") or {}).get("domainName")
+        if not domain:
+            headers = event.get("headers") or {}
+            if isinstance(headers, dict):
+                for key, val in headers.items():
+                    if isinstance(key, str) and key.lower() == "host":
+                        domain = val
+                        break
+        if isinstance(domain, str) and domain.strip():
+            request_host = domain.strip().split(":", 1)[0].lower()
+
+    if request_host:
+        if configured_host and request_host == configured_host:
+            return configured_path
+        if request_host in SUBPATH_HOSTS:
+            return configured_path or DEFAULT_SUBPATH_PREFIX
+        return ""
+
+    return configured_path
+
+
+def prefixed_path(path, base_path=""):
+    prefix = normalize_base_path(base_path)
+    if not prefix:
+        return path
+    if path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "?"):
+        return path
+    return prefix + path
 
 # ---------------------------------------------------------------------------
 # SHARED DESIGN TOKENS & STYLES
@@ -948,7 +1031,9 @@ def render_google_icon_svg():
 # SHARED HEADER & FOOTER
 # ---------------------------------------------------------------------------
 
-def render_header(current_path="/hayder"):
+def render_header(current_path="/hayder", base_path=""):
+    voice_href = prefixed_path("/voice", base_path)
+    normalized_current = current_path.rstrip("/") if current_path != "/" else "/"
     nav_links = [
         ("/hayder/features", "Features"),
         ("/hayder/how-it-works", "How It Works"),
@@ -959,7 +1044,9 @@ def render_header(current_path="/hayder"):
     ]
     links_html = []
     for href, label in nav_links:
-        active_class = " active" if current_path == href else ""
+        unprefixed = href[len("/hayder"):]
+        is_active = normalized_current in (href, unprefixed)
+        active_class = " active" if is_active else ""
         links_html.append(f'<a href="{href}" class="nav-link{active_class}">{label}</a>')
 
     return f"""<header class="site-header">
@@ -974,14 +1061,17 @@ def render_header(current_path="/hayder"):
     <nav class="main-nav" aria-label="Main Navigation">
       {''.join(links_html)}
       <div class="nav-cta-group">
-        <a href="/voice" class="btn btn-secondary btn-sm" aria-label="Open Voice Assistant">Open Voice</a>
-        <a href="/voice" class="btn btn-primary btn-sm" aria-label="Connect with Google">Connect with Google</a>
+        <a href="{voice_href}" class="btn btn-secondary btn-sm" aria-label="Open Voice Assistant">Open Voice</a>
+        <a href="{voice_href}" class="btn btn-primary btn-sm" aria-label="Connect with Google">Connect with Google</a>
       </div>
     </nav>
   </div>
 </header>"""
 
-def render_footer():
+def render_footer(base_path=""):
+    voice_href = prefixed_path("/voice", base_path)
+    privacy_href = prefixed_path("/privacy", base_path)
+    terms_href = prefixed_path("/terms", base_path)
     return f"""<footer class="site-footer">
   <div class="footer-container">
     <div class="footer-grid">
@@ -1009,7 +1099,7 @@ def render_footer():
           <li><a href="/hayder/how-it-works" class="footer-link">How It Works</a></li>
           <li><a href="/hayder/security" class="footer-link">Security</a></li>
           <li><a href="/hayder/pricing" class="footer-link">Pricing</a></li>
-          <li><a href="/voice" class="footer-link">Voice Assistant</a></li>
+          <li><a href="{voice_href}" class="footer-link">Voice Assistant</a></li>
         </ul>
       </div>
 
@@ -1025,8 +1115,8 @@ def render_footer():
       <div>
         <div class="footer-col-title">Legal</div>
         <ul class="footer-nav">
-          <li><a href="/privacy" class="footer-link">Privacy</a></li>
-          <li><a href="/terms" class="footer-link">Terms</a></li>
+          <li><a href="{privacy_href}" class="footer-link">Privacy</a></li>
+          <li><a href="{terms_href}" class="footer-link">Terms</a></li>
         </ul>
       </div>
     </div>
@@ -1040,7 +1130,7 @@ def render_footer():
   </div>
 </footer>"""
 
-def render_html_shell(title, content, current_path="/hayder", extra_head="", extra_scripts=""):
+def render_html_shell(title, content, current_path="/hayder", extra_head="", extra_scripts="", base_path=""):
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1054,11 +1144,11 @@ def render_html_shell(title, content, current_path="/hayder", extra_head="", ext
 {extra_head}
 </head>
 <body>
-{render_header(current_path)}
+{render_header(current_path, base_path=base_path)}
 <main class="main-content">
 {content}
 </main>
-{render_footer()}
+{render_footer(base_path=base_path)}
 {extra_scripts}
 </body>
 </html>"""
@@ -1067,7 +1157,8 @@ def render_html_shell(title, content, current_path="/hayder", extra_head="", ext
 # PAGE 1: /hayder (HOME / LANDING PAGE)
 # ---------------------------------------------------------------------------
 
-def render_home_page():
+def render_home_page(base_path=""):
+    voice_href = prefixed_path("/voice", base_path)
     content = f"""
 <section class="section-hero">
   <div class="container-narrow">
@@ -1094,7 +1185,7 @@ def render_home_page():
     </p>
 
     <div class="hero-cta-group">
-      <a href="/voice" class="btn btn-google btn-lg" aria-label="Connect with Google">
+      <a href="{voice_href}" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
@@ -1233,7 +1324,7 @@ def render_home_page():
       </div>
 
       <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border-subtle);">
-        <a href="/voice" class="btn btn-primary" style="width: 100%; max-width: 320px;">
+        <a href="{voice_href}" class="btn btn-primary" style="width: 100%; max-width: 320px;">
           Launch Hayder Voice Assistant &rarr;
         </a>
       </div>
@@ -1293,7 +1384,7 @@ def render_home_page():
       A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.
     </p>
     <div class="hero-cta-group">
-      <a href="/voice" class="btn btn-google btn-lg" aria-label="Connect with Google">
+      <a href="{voice_href}" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
@@ -1402,13 +1493,14 @@ document.getElementById("demoAudioBtn").addEventListener("click", () => {
 });
 </script>
 """
-    return render_html_shell("Hayder by Xorwia — Your day, prepared. You stay in control.", content, current_path="/hayder", extra_scripts=extra_scripts)
+    return render_html_shell("Hayder by Xorwia — Your day, prepared. You stay in control.", content, current_path="/hayder", extra_scripts=extra_scripts, base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # PAGE 2: /hayder/features
 # ---------------------------------------------------------------------------
 
-def render_features_page():
+def render_features_page(base_path=""):
+    voice_href = prefixed_path("/voice", base_path)
     content = f"""
 <section class="section-hero">
   <div class="container-narrow">
@@ -1501,7 +1593,7 @@ def render_features_page():
     </div>
 
     <div class="hero-cta-group" style="margin-top: 56px;">
-      <a href="/voice" class="btn btn-google btn-lg" aria-label="Connect with Google">
+      <a href="{voice_href}" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
@@ -1512,13 +1604,14 @@ def render_features_page():
   </div>
 </section>
 """
-    return render_html_shell("Features — Hayder by Xorwia", content, current_path="/hayder/features")
+    return render_html_shell("Features — Hayder by Xorwia", content, current_path="/hayder/features", base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # PAGE 3: /hayder/how-it-works
 # ---------------------------------------------------------------------------
 
-def render_how_it_works_page():
+def render_how_it_works_page(base_path=""):
+    voice_href = prefixed_path("/voice", base_path)
     content = f"""
 <section class="section-hero">
   <div class="container-narrow">
@@ -1597,7 +1690,7 @@ def render_how_it_works_page():
     </div>
 
     <div class="hero-cta-group" style="margin-top: 48px;">
-      <a href="/voice" class="btn btn-google btn-lg" aria-label="Connect with Google">
+      <a href="{voice_href}" class="btn btn-google btn-lg" aria-label="Connect with Google">
         {render_google_icon_svg()}
         Connect with Google
       </a>
@@ -1608,13 +1701,13 @@ def render_how_it_works_page():
   </div>
 </section>
 """
-    return render_html_shell("How It Works — Hayder by Xorwia", content, current_path="/hayder/how-it-works")
+    return render_html_shell("How It Works — Hayder by Xorwia", content, current_path="/hayder/how-it-works", base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # PAGE 4: /hayder/security
 # ---------------------------------------------------------------------------
 
-def render_security_page():
+def render_security_page(base_path=""):
     content = f"""
 <section class="section-hero">
   <div class="container-narrow">
@@ -1681,13 +1774,17 @@ def render_security_page():
   </div>
 </section>
 """
-    return render_html_shell("Security — Hayder by Xorwia", content, current_path="/hayder/security")
+    return render_html_shell("Security — Hayder by Xorwia", content, current_path="/hayder/security", base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # PAGE 5: /hayder/pricing
 # ---------------------------------------------------------------------------
 
-def render_pricing_page():
+def render_pricing_page(base_path=""):
+    normalized_base = normalize_base_path(base_path)
+    base_path_js = json.dumps(normalized_base)
+    voice_monthly_href = prefixed_path("/voice?checkout=monthly", normalized_base)
+    voice_annual_href = prefixed_path("/voice?checkout=annual", normalized_base)
     content = f"""
 <section class="section-hero">
   <div class="container-narrow">
@@ -1722,7 +1819,7 @@ def render_pricing_page():
             </div>
             <a
               id="checkoutMonthlyBtn"
-              href="/voice?checkout=monthly"
+              href="{voice_monthly_href}"
               class="btn btn-primary btn-lg checkout-plan-btn"
               data-billing-interval="monthly"
               style="width: 100%;"
@@ -1742,7 +1839,7 @@ def render_pricing_page():
             </div>
             <a
               id="checkoutAnnualBtn"
-              href="/voice?checkout=annual"
+              href="{voice_annual_href}"
               class="btn btn-secondary btn-lg checkout-plan-btn"
               data-billing-interval="annual"
               style="width: 100%; border-color: var(--hayder-blue); color: var(--hayder-blue);"
@@ -1809,7 +1906,12 @@ def render_pricing_page():
 
     extra_scripts = """
 <script>
+const HAYDER_BASE_PATH = """ + base_path_js + """;
 const PENDING_CHECKOUT_PLAN_KEY = "hayder_pending_checkout_plan";
+
+function hayderPath(path) {
+  return HAYDER_BASE_PATH + path;
+}
 
 function normalizeCheckoutPlan(value) {
   if (typeof value !== "string") return null;
@@ -1864,7 +1966,7 @@ async function refreshPricingSession() {
   const refreshToken = sessionStorage.getItem("hayder_refresh_token");
   if (!refreshToken) return null;
   try {
-    const resp = await fetch("/auth/refresh", {
+    const resp = await fetch(hayderPath("/auth/refresh"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken })
@@ -1897,7 +1999,7 @@ async function getValidPricingIdToken() {
 
 function redirectToLoginForCheckout(plan) {
   sessionStorage.setItem(PENDING_CHECKOUT_PLAN_KEY, plan);
-  window.location.href = "/voice?checkout=" + encodeURIComponent(plan);
+  window.location.href = hayderPath("/voice?checkout=" + encodeURIComponent(plan));
 }
 
 async function startPricingCheckout(rawPlan) {
@@ -1919,7 +2021,7 @@ async function startPricingCheckout(rawPlan) {
 
     setPricingCheckoutStatus("Preparing secure Stripe Checkout...", false);
 
-    let resp = await fetch("/billing/checkout", {
+    let resp = await fetch(hayderPath("/billing/checkout"), {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + token,
@@ -1934,7 +2036,7 @@ async function startPricingCheckout(rawPlan) {
         redirectToLoginForCheckout(plan);
         return;
       }
-      resp = await fetch("/billing/checkout", {
+      resp = await fetch(hayderPath("/billing/checkout"), {
         method: "POST",
         headers: {
           "Authorization": "Bearer " + token,
@@ -1973,13 +2075,13 @@ document.querySelectorAll(".checkout-plan-btn").forEach((btn) => {
 });
 </script>
 """
-    return render_html_shell("Pricing — Hayder by Xorwia", content, current_path="/hayder/pricing", extra_scripts=extra_scripts)
+    return render_html_shell("Pricing — Hayder by Xorwia", content, current_path="/hayder/pricing", extra_scripts=extra_scripts, base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # PAGE 6: /hayder/about
 # ---------------------------------------------------------------------------
 
-def render_about_page():
+def render_about_page(base_path=""):
     content = f"""
 <section class="section-hero">
   <div class="container-narrow">
@@ -2045,13 +2147,13 @@ def render_about_page():
   </div>
 </section>
 """
-    return render_html_shell("About — Hayder by Xorwia", content, current_path="/hayder/about")
+    return render_html_shell("About — Hayder by Xorwia", content, current_path="/hayder/about", base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # PAGE 7: /hayder/support
 # ---------------------------------------------------------------------------
 
-def render_support_page():
+def render_support_page(base_path=""):
     content = f"""
 <section class="section-hero">
   <div class="container-narrow">
@@ -2132,7 +2234,7 @@ def render_support_page():
   </div>
 </section>
 """
-    return render_html_shell("Support — Hayder by Xorwia", content, current_path="/hayder/support")
+    return render_html_shell("Support — Hayder by Xorwia", content, current_path="/hayder/support", base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # PAGE 8: /privacy (SHARED LEGAL PAGE)
@@ -2141,7 +2243,7 @@ def render_support_page():
 # Do not invent unverified company details.
 # ---------------------------------------------------------------------------
 
-def render_privacy_page():
+def render_privacy_page(base_path=""):
     content = f"""
 <section class="section-hero" style="padding-bottom: 40px;">
   <div class="container-narrow">
@@ -2228,7 +2330,7 @@ def render_privacy_page():
   </div>
 </section>
 """
-    return render_html_shell("Privacy Policy — Xorwia", content, current_path="/privacy")
+    return render_html_shell("Privacy Policy — Xorwia", content, current_path="/privacy", base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # PAGE 9: /terms (SHARED LEGAL PAGE)
@@ -2237,7 +2339,7 @@ def render_privacy_page():
 # Do not invent unverified company details.
 # ---------------------------------------------------------------------------
 
-def render_terms_page():
+def render_terms_page(base_path=""):
     content = f"""
 <section class="section-hero" style="padding-bottom: 40px;">
   <div class="container-narrow">
@@ -2312,14 +2414,17 @@ def render_terms_page():
   </div>
 </section>
 """
-    return render_html_shell("Terms of Service — Xorwia", content, current_path="/terms")
+    return render_html_shell("Terms of Service — Xorwia", content, current_path="/terms", base_path=base_path)
 
 # ---------------------------------------------------------------------------
 # BILLING RETURN PAGES: /billing/success & /billing/cancel
 # ---------------------------------------------------------------------------
 
-def render_billing_success_page():
-    content = """
+def render_billing_success_page(base_path=""):
+    normalized_base = normalize_base_path(base_path)
+    base_path_js = json.dumps(normalized_base)
+    voice_href = prefixed_path("/voice", normalized_base)
+    content = f"""
 <section class="section-hero" style="padding-bottom: 40px;">
   <div class="container-narrow">
     <h1 class="hero-title">Checkout complete</h1>
@@ -2340,7 +2445,7 @@ def render_billing_success_page():
         Access activates automatically once Stripe confirms payment with Xorwia Billing.
       </p>
       <div class="hero-cta-group" style="margin-bottom: 16px;">
-        <a href="/voice" class="btn btn-primary btn-lg">Open Hayder Voice</a>
+        <a href="{voice_href}" class="btn btn-primary btn-lg">Open Hayder Voice</a>
         <button id="recheckBillingStatusBtn" type="button" class="btn btn-secondary btn-lg">Check status again</button>
       </div>
       <p style="font-size: 13px; color: var(--text-tertiary);">
@@ -2352,14 +2457,19 @@ def render_billing_success_page():
 """
     extra_scripts = """
 <script>
+const HAYDER_BASE_PATH = """ + base_path_js + """;
 const PENDING_CHECKOUT_PLAN_KEY = "hayder_pending_checkout_plan";
+
+function hayderPath(path) {
+  return HAYDER_BASE_PATH + path;
+}
 sessionStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
 
 async function refreshBillingStatusToken() {
   const refreshToken = sessionStorage.getItem("hayder_refresh_token");
   if (!refreshToken) return null;
   try {
-    const resp = await fetch("/auth/refresh", {
+    const resp = await fetch(hayderPath("/auth/refresh"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken })
@@ -2402,7 +2512,7 @@ async function checkBillingActivation(attempt) {
   }
 
   try {
-    let resp = await fetch("/billing/status", {
+    let resp = await fetch(hayderPath("/billing/status"), {
       method: "GET",
       headers: { "Authorization": "Bearer " + token }
     });
@@ -2413,7 +2523,7 @@ async function checkBillingActivation(attempt) {
         detailEl.textContent = "Open Hayder Voice and sign in with your Cognito account to start using Hayder Pro.";
         return;
       }
-      resp = await fetch("/billing/status", {
+      resp = await fetch(hayderPath("/billing/status"), {
         method: "GET",
         headers: { "Authorization": "Bearer " + token }
       });
@@ -2450,11 +2560,12 @@ if (recheckBtn) {
 checkBillingActivation(1);
 </script>
 """
-    return render_html_shell("Checkout Complete — Hayder by Xorwia", content, current_path="/billing/success", extra_scripts=extra_scripts)
+    return render_html_shell("Checkout Complete — Hayder by Xorwia", content, current_path="/billing/success", extra_scripts=extra_scripts, base_path=base_path)
 
 
-def render_billing_cancel_page():
-    content = """
+def render_billing_cancel_page(base_path=""):
+    voice_href = prefixed_path("/voice", base_path)
+    content = f"""
 <section class="section-hero" style="padding-bottom: 40px;">
   <div class="container-narrow">
     <h1 class="hero-title">Checkout cancelled</h1>
@@ -2473,7 +2584,7 @@ def render_billing_cancel_page():
       </p>
       <div class="hero-cta-group" style="margin-bottom: 16px;">
         <a href="/hayder/pricing" class="btn btn-primary btn-lg">Return to Pricing</a>
-        <a href="/voice" class="btn btn-secondary btn-lg">Open Hayder Voice</a>
+        <a href="{voice_href}" class="btn btn-secondary btn-lg">Open Hayder Voice</a>
       </div>
       <p style="font-size: 13px; color: var(--text-tertiary);">
         Questions? Email <a href="mailto:hayder@xorwia.com" style="color: var(--hayder-blue);">hayder@xorwia.com</a>.
@@ -2487,7 +2598,7 @@ def render_billing_cancel_page():
 sessionStorage.removeItem("hayder_pending_checkout_plan");
 </script>
 """
-    return render_html_shell("Checkout Cancelled — Hayder by Xorwia", content, current_path="/billing/cancel", extra_scripts=extra_scripts)
+    return render_html_shell("Checkout Cancelled — Hayder by Xorwia", content, current_path="/billing/cancel", extra_scripts=extra_scripts, base_path=base_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2497,37 +2608,66 @@ sessionStorage.removeItem("hayder_pending_checkout_plan");
 ROUTES = {
     "/hayder": render_home_page,
     "/hayder/": render_home_page,
+    "/features": render_features_page,
+    "/features/": render_features_page,
     "/hayder/features": render_features_page,
     "/hayder/features/": render_features_page,
+    "/how-it-works": render_how_it_works_page,
+    "/how-it-works/": render_how_it_works_page,
     "/hayder/how-it-works": render_how_it_works_page,
     "/hayder/how-it-works/": render_how_it_works_page,
+    "/security": render_security_page,
+    "/security/": render_security_page,
     "/hayder/security": render_security_page,
     "/hayder/security/": render_security_page,
+    "/pricing": render_pricing_page,
+    "/pricing/": render_pricing_page,
     "/hayder/pricing": render_pricing_page,
     "/hayder/pricing/": render_pricing_page,
+    "/about": render_about_page,
+    "/about/": render_about_page,
     "/hayder/about": render_about_page,
     "/hayder/about/": render_about_page,
+    "/support": render_support_page,
+    "/support/": render_support_page,
     "/hayder/support": render_support_page,
     "/hayder/support/": render_support_page,
     "/privacy": render_privacy_page,
     "/privacy/": render_privacy_page,
+    "/hayder/privacy": render_privacy_page,
+    "/hayder/privacy/": render_privacy_page,
     "/terms": render_terms_page,
     "/terms/": render_terms_page,
+    "/hayder/terms": render_terms_page,
+    "/hayder/terms/": render_terms_page,
     "/billing/success": render_billing_success_page,
     "/billing/success/": render_billing_success_page,
+    "/hayder/billing/success": render_billing_success_page,
+    "/hayder/billing/success/": render_billing_success_page,
     "/billing/cancel": render_billing_cancel_page,
     "/billing/cancel/": render_billing_cancel_page,
+    "/hayder/billing/cancel": render_billing_cancel_page,
+    "/hayder/billing/cancel/": render_billing_cancel_page,
 }
 
-NO_STORE_PATHS = {"/billing/success", "/billing/cancel"}
+NO_STORE_PATHS = {
+    "/billing/success",
+    "/billing/cancel",
+    "/hayder/billing/success",
+    "/hayder/billing/cancel",
+}
 
-def render_page(path):
+def render_page(path, base_path=""):
     """
     Renders the appropriate page based on path.
     Returns standard Lambda proxy response dict.
     """
+    normalized_base = normalize_base_path(base_path)
     normalized_path = path.rstrip("/") if path != "/" else "/"
-    renderer = ROUTES.get(path) or ROUTES.get(normalized_path)
+    if normalized_path == "/" and normalized_base:
+        renderer = render_home_page
+    else:
+        renderer = ROUTES.get(path) or ROUTES.get(normalized_path)
 
     if renderer:
         cache_control = (
@@ -2541,7 +2681,7 @@ def render_page(path):
                 "content-type": "text/html; charset=utf-8",
                 "cache-control": cache_control,
             },
-            "body": renderer(),
+            "body": renderer(base_path=normalized_base),
         }
 
     # Clean 404 fallback
@@ -2560,5 +2700,5 @@ def render_page(path):
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
         },
-        "body": render_html_shell("Page Not Found", content, current_path=path),
+        "body": render_html_shell("Page Not Found", content, current_path=path, base_path=normalized_base),
     }

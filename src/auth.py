@@ -154,6 +154,8 @@ def lambda_handler(event, context):
     )
 
     path = event.get("rawPath", "")
+    if path.startswith("/hayder/"):
+        path = path[len("/hayder"):]
 
     if method != "POST":
         return response(

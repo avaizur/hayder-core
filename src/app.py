@@ -426,37 +426,107 @@ def is_safe_upstream_billing_url(url):
     return parsed.scheme == "https" or (parsed.scheme == "http" and is_local)
 
 
-def get_checkout_return_origin(event):
-    """
-    Derive safe server-side origin for Stripe Checkout success/cancel returns.
-    Never reads return URLs from browser body, query parameters, or X-Forwarded-Host.
-    """
+SUBPATH_HOSTS = ("xorwia.com", "www.xorwia.com")
+DEFAULT_SUBPATH_PREFIX = "/hayder"
+SAFE_PUBLIC_BASE_PATH_RE = re.compile(r"^/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
+
+
+def _parse_configured_public_base_url():
     configured = (
         os.environ.get("HAYDER_PUBLIC_BASE_URL", HAYDER_PUBLIC_BASE_URL) or ""
     ).strip().rstrip("/")
+    if not configured:
+        return None
+    if any(ord(ch) <= 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in configured):
+        raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
+    try:
+        parsed = urlparse(configured)
+        _ = parsed.port
+    except Exception:
+        raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
+    is_local = parsed.hostname in ("localhost", "127.0.0.1")
+    protocol_ok = parsed.scheme == "https" or (parsed.scheme == "http" and is_local)
+    raw_path = parsed.path or ""
+    normalized_path = raw_path.rstrip("/")
+    path_ok = (
+        ".." not in raw_path
+        and "//" not in raw_path
+        and (
+            normalized_path == ""
+            or bool(SAFE_PUBLIC_BASE_PATH_RE.fullmatch(normalized_path))
+        )
+    )
+    if (
+        not protocol_ok
+        or not parsed.netloc
+        or not parsed.hostname
+        or not re.fullmatch(r"[a-zA-Z0-9.-]+", parsed.hostname)
+        or parsed.username is not None
+        or parsed.password is not None
+        or not path_ok
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
+    return f"{parsed.scheme}://{parsed.netloc}{normalized_path}", normalized_path, parsed.hostname.lower()
 
-    if configured:
-        if any(ord(ch) <= 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in configured):
-            raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
-        try:
-            parsed = urlparse(configured)
-            _ = parsed.port
-        except Exception:
-            raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
-        is_local = parsed.hostname in ("localhost", "127.0.0.1")
-        protocol_ok = parsed.scheme == "https" or (parsed.scheme == "http" and is_local)
-        if (
-            not protocol_ok
-            or not parsed.netloc
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.path not in ("", "/")
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise XorwiaCheckoutError(500, "Checkout return URL configuration is invalid.")
-        return f"{parsed.scheme}://{parsed.netloc}"
+
+def _extract_request_host(event):
+    domain = (
+        (event.get("requestContext") or {}).get("domainName")
+        if isinstance(event, dict)
+        else None
+    )
+    if not domain and isinstance(event, dict):
+        headers = event.get("headers") or {}
+        if isinstance(headers, dict):
+            for key, val in headers.items():
+                if isinstance(key, str) and key.lower() == "host":
+                    domain = val
+                    break
+    if isinstance(domain, str) and domain.strip():
+        return domain.strip().split(":", 1)[0].lower()
+    return None
+
+
+def _is_execute_api_host(host):
+    return bool(host and ".execute-api." in host and host.endswith(".amazonaws.com"))
+
+
+def get_public_base_path(event):
+    """
+    Resolve Hayder's mount base path ('/hayder' or '') for internal links.
+    Direct execute-api hosts always stay unprefixed ('').
+    """
+    configured_host = None
+    configured_path = ""
+    try:
+        configured = _parse_configured_public_base_url()
+        if configured is not None:
+            configured_path = configured[1]
+            configured_host = configured[2]
+    except XorwiaCheckoutError:
+        pass
+
+    request_host = _extract_request_host(event)
+    if request_host:
+        if configured_host and request_host == configured_host:
+            return configured_path
+        if request_host in SUBPATH_HOSTS:
+            return configured_path or DEFAULT_SUBPATH_PREFIX
+        return ""
+    return configured_path
+
+
+def get_checkout_return_origin(event):
+    """
+    Derive safe server-side base URL (origin + optional base path) for Stripe Checkout
+    success/cancel returns.
+    Never reads return URLs from browser body, query parameters, or X-Forwarded-Host.
+    """
+    configured = _parse_configured_public_base_url()
+    if configured is not None:
+        return configured[0]
 
     domain = (
         (event.get("requestContext") or {}).get("domainName")
@@ -499,6 +569,8 @@ def get_checkout_return_origin(event):
     ):
         raise XorwiaCheckoutError(400, "Invalid request host.")
 
+    if parsed_host.hostname.lower() in SUBPATH_HOSTS:
+        return f"https://{parsed_host.netloc}{DEFAULT_SUBPATH_PREFIX}"
     return f"https://{parsed_host.netloc}"
 
 
@@ -958,11 +1030,22 @@ def get_api_origin(event):
 
 
 def google_redirect_uri(event):
+    request_host = _extract_request_host(event)
+    if _is_execute_api_host(request_host):
+        return get_api_origin(event) + "/oauth/google/callback"
 
-    return (
-        get_api_origin(event)
-        + "/oauth/google/callback"
-    )
+    try:
+        configured = _parse_configured_public_base_url()
+        if configured is not None:
+            return configured[0] + "/oauth/google/callback"
+    except XorwiaCheckoutError:
+        pass
+
+    origin = get_api_origin(event)
+    parsed = urlparse(origin)
+    if (parsed.hostname or "").lower() in SUBPATH_HOSTS:
+        return origin + DEFAULT_SUBPATH_PREFIX + "/oauth/google/callback"
+    return origin + "/oauth/google/callback"
 
 
 # ------------------------------------------------
@@ -1682,6 +1765,8 @@ def google_callback(
     accept = (headers.get("accept") or headers.get("Accept") or "").lower()
     is_browser = "text/html" in accept
 
+    voice_href = f"{get_public_base_path(event)}/voice"
+
     def error_result(status_code, safe_message):
         if is_browser:
             html_body = f"""<!DOCTYPE html>
@@ -1693,7 +1778,7 @@ def google_callback(
 <body style="font-family:Arial;max-width:700px;margin:60px auto;padding:20px;">
 <h1>⚠️ Google connection failed</h1>
 <p>{html.escape(safe_message)}</p>
-<p><a href="/voice">Return to Hayder Voice</a></p>
+<p><a href="{voice_href}">Return to Hayder Voice</a></p>
 </body>
 </html>"""
             return response(
@@ -1874,7 +1959,7 @@ and say:
 “Hayder, what's on my calendar today?”
 </h2>
 
-<a href="/voice">
+<a href="{voice_href}">
 Return to Hayder Voice
 </a>
 
@@ -5102,6 +5187,10 @@ def lambda_handler(
         "rawPath",
         "",
     )
+    if path == "/hayder":
+        path = "/"
+    elif path.startswith("/hayder/"):
+        path = path[len("/hayder"):]
 
     path_parameters = (
         event.get(
@@ -5156,6 +5245,7 @@ def lambda_handler(
             headers = event.get("headers") or {}
             accept = (headers.get("accept") or headers.get("Accept") or "").lower()
             if "text/html" in accept:
+                voice_href = f"{get_public_base_path(event)}/voice"
                 html_body = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -5165,7 +5255,7 @@ def lambda_handler(
 <body style="font-family:Arial;max-width:700px;margin:60px auto;padding:20px;">
 <h1>⚠️ Google connection failed</h1>
 <p>{html.escape(safe_msg)}</p>
-<p><a href="/voice">Return to Hayder Voice</a></p>
+<p><a href="{voice_href}">Return to Hayder Voice</a></p>
 </body>
 </html>"""
                 return response(

@@ -33,10 +33,12 @@ def get_cognito_auth_config():
     }
 
 
-def render_voice_page():
+def render_voice_page(base_path=""):
     auth_cfg = get_cognito_auth_config()
     cognito_domain_js = json.dumps(auth_cfg["cognito_domain"])
     cognito_client_id_js = json.dumps(auth_cfg["cognito_client_id"])
+    normalized_base = web.normalize_base_path(base_path)
+    base_path_js = json.dumps(normalized_base)
     html = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -390,7 +392,7 @@ button {
 
 <body>
 
-""" + web.render_header(current_path="/voice") + r"""
+""" + web.render_header(current_path="/voice", base_path=normalized_base) + r"""
 
 <main class="main-content">
 <div class="voice-shell">
@@ -512,15 +514,20 @@ button {
 </div>
 </main>
 
-""" + web.render_footer() + r"""
+""" + web.render_footer(base_path=normalized_base) + r"""
 
 <script>
 
 const COGNITO_DOMAIN = """ + cognito_domain_js + r""";
 const COGNITO_CLIENT_ID = """ + cognito_client_id_js + r""";
+const HAYDER_BASE_PATH = """ + base_path_js + r""";
 const PKCE_VERIFIER_KEY = "hayder_pkce_verifier";
 const OAUTH_STATE_KEY = "hayder_oauth_state";
 const PENDING_CHECKOUT_PLAN_KEY = "hayder_pending_checkout_plan";
+
+function hayderPath(path) {
+    return HAYDER_BASE_PATH + path;
+}
 
 const loginCard =
     document.getElementById("loginCard");
@@ -675,7 +682,7 @@ function capturePendingCheckoutFromUrl() {
             && window.history
             && window.history.replaceState
         ) {
-            window.history.replaceState({}, "", window.location.pathname || "/voice");
+            window.history.replaceState({}, "", window.location.pathname || hayderPath("/voice"));
         }
     }
     updateCheckoutNotice();
@@ -696,7 +703,7 @@ async function startBillingCheckout(rawPlan) {
         let token = await getValidIdToken();
 
         let response = await fetch(
-            "/billing/checkout",
+            hayderPath("/billing/checkout"),
             {
                 method: "POST",
                 headers: {
@@ -721,7 +728,7 @@ async function startBillingCheckout(rawPlan) {
             }
             token = await getValidIdToken();
             response = await fetch(
-                "/billing/checkout",
+                hayderPath("/billing/checkout"),
                 {
                     method: "POST",
                     headers: {
@@ -925,7 +932,7 @@ async function login() {
 
         const response =
             await fetch(
-                "/auth/login",
+                hayderPath("/auth/login"),
                 {
                     method: "POST",
                     headers: {
@@ -988,7 +995,7 @@ async function refreshSession() {
 
         const response =
             await fetch(
-                "/auth/refresh",
+                hayderPath("/auth/refresh"),
                 {
                     method: "POST",
                     headers: {
@@ -1362,12 +1369,17 @@ async function sendToHayder(message) {
 
     try {
 
+        const chatUrl =
+            typeof hayderPath === "function"
+                ? hayderPath("/chat")
+                : "/chat";
+
         let token =
             await getValidIdToken();
 
         let response =
             await fetch(
-                "/chat",
+                chatUrl,
                 {
                     method: "POST",
                     headers: {
@@ -1404,7 +1416,7 @@ async function sendToHayder(message) {
 
             response =
                 await fetch(
-                    "/chat",
+                    chatUrl,
                     {
                         method: "POST",
 
@@ -1535,7 +1547,7 @@ async function triggerGoogleConnect() {
 
         const response =
             await fetch(
-                "/oauth/google/connect",
+                hayderPath("/oauth/google/connect"),
                 {
                     method: "GET",
                     headers: {
@@ -1874,7 +1886,17 @@ function clearPkceState() {
 
 
 function getVoiceRedirectUri() {
-    return window.location.origin + "/voice";
+    const basePath = HAYDER_BASE_PATH || (
+        window.location
+        && typeof window.location.pathname === "string"
+        && (
+            window.location.pathname === "/hayder/voice"
+            || window.location.pathname.startsWith("/hayder/")
+        )
+            ? "/hayder"
+            : ""
+    );
+    return window.location.origin + basePath + "/voice";
 }
 
 
@@ -1952,7 +1974,7 @@ async function handleGoogleSignInCallback() {
     }
 
     if (window.history && window.history.replaceState) {
-        window.history.replaceState({}, "", window.location.pathname || "/voice");
+        window.history.replaceState({}, "", window.location.pathname || hayderPath("/voice"));
     }
 
     const expectedState = sessionStorage.getItem(OAUTH_STATE_KEY);
@@ -2064,10 +2086,11 @@ restoreSession();
 def lambda_handler(event, context):
     """
     Main entrypoint for public web pages and voice assistant.
-    Dispatches by rawPath:
-      /voice -> render_voice_page()
-      /hayder, /hayder/features, /hayder/how-it-works, etc. -> web.render_page()
+    Dispatches by rawPath (both direct and API Gateway base-path-stripped):
+      /voice, /hayder/voice -> render_voice_page()
+      /, /hayder, /features, /hayder/features, etc. -> web.render_page()
     """
+    base_path = web.resolve_base_path(event)
     path = ""
     if isinstance(event, dict):
         path = (
@@ -2082,8 +2105,8 @@ def lambda_handler(event, context):
         path = path.split("?", 1)[0]
 
     # If path is specified and not the dedicated voice page, dispatch to web module
-    if path and path not in ("/voice", "/voice/"):
-        return web.render_page(path)
+    if path and path not in ("/voice", "/voice/", "/hayder/voice", "/hayder/voice/"):
+        return web.render_page(path, base_path=base_path)
 
     # Default (or /voice) returns the dedicated voice assistant page
-    return render_voice_page()
+    return render_voice_page(base_path=base_path)
