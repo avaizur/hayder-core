@@ -35,15 +35,23 @@ class GoogleCognitoPkceSignupTests(unittest.TestCase):
     def test_template_yaml_cognito_google_federation_and_no_auto_linking(self):
         template_text = (ROOT / "template.yaml").read_text(encoding="utf-8")
 
-        # Placeholder parameters without real secrets
+        # Locked Cognito domain and secure Secrets Manager dynamic references (no hardcoded or placeholder secrets)
         self.assertIn("CognitoDomainPrefix:", template_text)
-        self.assertIn('Default: "hayder-auth-placeholder"', template_text)
-        self.assertIn("GoogleFederationClientId:", template_text)
-        self.assertIn('Default: "GOOGLE_FEDERATION_CLIENT_ID_PLACEHOLDER"', template_text)
-        self.assertIn("GoogleFederationClientSecret:", template_text)
-        self.assertIn('Default: "GOOGLE_FEDERATION_CLIENT_SECRET_PLACEHOLDER"', template_text)
+        self.assertIn('Default: "hayder-xorwia-auth"', template_text)
+        self.assertNotIn("GOOGLE_FEDERATION_CLIENT_ID_PLACEHOLDER", template_text)
+        self.assertNotIn("GOOGLE_FEDERATION_CLIENT_SECRET_PLACEHOLDER", template_text)
+        self.assertIn(
+            'client_id: "{{resolve:secretsmanager:hayder/google/federation:SecretString:client_id}}"',
+            template_text,
+        )
+        self.assertIn(
+            'client_secret: "{{resolve:secretsmanager:hayder/google/federation:SecretString:client_secret}}"',
+            template_text,
+        )
         self.assertIn("HayderCustomVoiceCallbackUrl:", template_text)
         self.assertIn('Default: "https://xorwia.com/hayder/voice"', template_text)
+        self.assertIn("HayderDirectApiVoiceCallbackUrl:", template_text)
+        self.assertIn("HayderCognitoGoogleIdpRedirectUri:", template_text)
 
         # Cognito Domain & Google IdP resources
         self.assertIn("HayderUserPoolDomain:", template_text)
@@ -54,7 +62,8 @@ class GoogleCognitoPkceSignupTests(unittest.TestCase):
         self.assertIn("ProviderType: Google", template_text)
         self.assertIn('authorize_scopes: "openid email profile"', template_text)
 
-        # UserPoolClient is public (no client secret), preserves password/refresh flows, and adds code OAuth + Google IdP
+        # UserPoolClient is public (no client secret), preserves password/refresh flows, adds code OAuth + Google IdP,
+        # and avoids circular dependency with HayderApi
         self.assertIn("GenerateSecret: false", template_text)
         self.assertNotIn("GenerateSecret: true", template_text)
         self.assertIn("ALLOW_USER_PASSWORD_AUTH", template_text)
@@ -65,8 +74,11 @@ class GoogleCognitoPkceSignupTests(unittest.TestCase):
         self.assertIn("AllowedOAuthFlowsUserPoolClient: true", template_text)
         self.assertIn("AllowedOAuthFlows:", template_text)
         self.assertIn("- code", template_text)
-        self.assertIn('!Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"', template_text)
         self.assertIn("!Ref HayderCustomVoiceCallbackUrl", template_text)
+        client_block = template_text[
+            template_text.index("HayderUserPoolClient:"):template_text.index("HayderApi:")
+        ]
+        self.assertNotIn("${HayderApi}", client_block)
 
         # Secure fail-closed PreSignUp Google linking with least-privilege IAM
         self.assertIn("FounderGoogleSubject:", template_text)

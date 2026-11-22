@@ -7,7 +7,7 @@ Parameters:
 
   XorwiaBillingBaseUrl:
     Type: String
-    Default: ""
+    Default: "https://xorwia.com"
 
   HayderPublicBaseUrl:
     Type: String
@@ -15,21 +15,16 @@ Parameters:
 
   CognitoDomainPrefix:
     Type: String
-    Default: "hayder-auth-placeholder"
-
-  GoogleFederationClientId:
-    Type: String
-    Default: "GOOGLE_FEDERATION_CLIENT_ID_PLACEHOLDER"
-    NoEcho: true
-
-  GoogleFederationClientSecret:
-    Type: String
-    Default: "GOOGLE_FEDERATION_CLIENT_SECRET_PLACEHOLDER"
-    NoEcho: true
+    Default: "hayder-xorwia-auth"
 
   HayderCustomVoiceCallbackUrl:
     Type: String
     Default: "https://xorwia.com/hayder/voice"
+
+  HayderDirectApiVoiceCallbackUrl:
+    Type: String
+    Default: ""
+    Description: Optional direct execute-api /voice callback URL (passed as parameter to avoid circular dependency between HayderUserPoolClient and HayderApi).
 
   FounderGoogleSubject:
     Type: String
@@ -63,6 +58,9 @@ Parameters:
       - "false"
       - "true"
     Description: Explicit opt-in required to allow cross-email founder Google linking (fails closed by default to prevent silent Cognito email attribute overwrite).
+
+Conditions:
+  HasDirectApiVoiceCallbackUrl: !Not [!Equals [!Ref HayderDirectApiVoiceCallbackUrl, ""]]
 
 Resources:
 
@@ -139,6 +137,8 @@ Resources:
       UserPoolId: !Ref HayderUserPool
 
   # Cognito Google Federation IdP (Sign-in only: openid email profile).
+  # Uses AWS Secrets Manager dynamic references (secret: hayder/google/federation)
+  # so real OAuth credentials never enter git, parameters, or CLI history.
   # Separate from workspace Gmail/Calendar OAuth (/oauth/google/connect).
   # PreSignUp trigger fails closed on email-only matches and links only
   # explicitly allowlisted verified Google subjects to confirmed native users.
@@ -149,8 +149,8 @@ Resources:
       ProviderName: Google
       ProviderType: Google
       ProviderDetails:
-        client_id: !Ref GoogleFederationClientId
-        client_secret: !Ref GoogleFederationClientSecret
+        client_id: "{{resolve:secretsmanager:hayder/google/federation:SecretString:client_id}}"
+        client_secret: "{{resolve:secretsmanager:hayder/google/federation:SecretString:client_secret}}"
         authorize_scopes: "openid email profile"
       AttributeMapping:
         email: email
@@ -178,13 +178,19 @@ Resources:
         - email
         - profile
       CallbackURLs:
-        - !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"
         - !Ref HayderCustomVoiceCallbackUrl
         - "https://www.xorwia.com/hayder/voice"
+        - !If
+          - HasDirectApiVoiceCallbackUrl
+          - !Ref HayderDirectApiVoiceCallbackUrl
+          - !Ref AWS::NoValue
       LogoutURLs:
-        - !Sub "https://${HayderApi}.execute-api.${AWS::Region}.amazonaws.com/voice"
         - !Ref HayderCustomVoiceCallbackUrl
         - "https://www.xorwia.com/hayder/voice"
+        - !If
+          - HasDirectApiVoiceCallbackUrl
+          - !Ref HayderDirectApiVoiceCallbackUrl
+          - !Ref AWS::NoValue
 
   HayderApi:
     Type: AWS::Serverless::HttpApi
@@ -623,3 +629,6 @@ Outputs:
 
   HayderCognitoHostedUiDomain:
     Value: !Sub "https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
+
+  HayderCognitoGoogleIdpRedirectUri:
+    Value: !Sub "https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse"

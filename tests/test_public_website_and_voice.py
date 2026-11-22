@@ -92,9 +92,9 @@ class PublicWebsiteAndVoiceTests(unittest.TestCase):
         self.assertIn("Hayder prepares; you approve.", html)
         self.assertIn("A calm AI assistant for your email, calendar and daily priorities &mdash; with you in control of every important action.", html)
 
-        # CTAs
+        # CTAs (public landing routes through /voice sign-in before protected /oauth/google/connect)
         self.assertIn("Connect with Google", html)
-        self.assertIn("/oauth/google/connect", html)
+        self.assertIn('href="/voice"', html)
         self.assertIn("See how Hayder works", html)
         self.assertIn("/hayder/how-it-works", html)
 

@@ -210,6 +210,100 @@ class SecureGoogleAccountLinkingTests(unittest.TestCase):
             },
         )
 
+    def test_same_email_founder_end_to_end_preserves_sub_email_entitlement_and_saved_data(self):
+        """
+        Locked founder mode: same-email Xorwia Studio Gmail with cross-email linking OFF.
+        Verifies PreSignUp link + subsequent Google-authenticated requests preserve:
+          - native Cognito sub (hayder:<sub_id> -> HAYDER_PRO entitlement)
+          - native email partition key (memory, approvals, Gmail OAuth secret)
+        """
+        founder_gmail = "xorwia.studio@gmail.com"
+        founder_env = {
+            "FOUNDER_GOOGLE_SUBJECT": FOUNDER_GOOGLE_SUB,
+            "FOUNDER_GOOGLE_EMAIL": founder_gmail,
+            "FOUNDER_NATIVE_USERNAME": FOUNDER_NATIVE_USERNAME,
+            "FOUNDER_NATIVE_SUB": FOUNDER_NATIVE_SUB,
+            "FOUNDER_NATIVE_EMAIL": founder_gmail,
+            "ALLOW_FOUNDER_CROSS_EMAIL_LINK": "false",
+        }
+
+        native_list = _make_cognito_user(email=founder_gmail)
+        native_admin = _make_cognito_user(email=founder_gmail, use_admin_attr_key=True)
+        client = _make_cognito_mock(
+            users_by_username={FOUNDER_NATIVE_USERNAME: native_admin},
+            users_by_email={founder_gmail: [native_list]},
+        )
+        link_event = _make_pre_signup_event(
+            username=f"Google_{FOUNDER_GOOGLE_SUB}",
+            email=founder_gmail.upper(),
+            email_verified="true",
+        )
+
+        # 1. Same-email linking succeeds with cross-email OFF
+        res = pre_signup.handle_pre_signup(link_event, cognito_client=client, env=founder_env)
+        self.assertIs(res, link_event)
+        client.admin_link_provider_for_user.assert_called_once_with(
+            UserPoolId=POOL_ID,
+            DestinationUser={
+                "ProviderName": "Cognito",
+                "ProviderAttributeValue": FOUNDER_NATIVE_USERNAME,
+            },
+            SourceUser={
+                "ProviderName": "Google",
+                "ProviderAttributeName": "Cognito_Subject",
+                "ProviderAttributeValue": FOUNDER_GOOGLE_SUB,
+            },
+        )
+
+        # 2. Post-link Google JWT preserves native sub, native email, HAYDER_PRO & saved data keys
+        post_link_claims = {
+            "sub": FOUNDER_NATIVE_SUB,
+            "email": founder_gmail,
+            "identities": json.dumps(
+                [{"providerName": "Google", "userId": FOUNDER_GOOGLE_SUB}]
+            ),
+        }
+
+        def _req(method, path, body=None):
+            ev = {
+                "rawPath": path,
+                "requestContext": {
+                    "http": {"method": method},
+                    "authorizer": {"jwt": {"claims": post_link_claims}},
+                },
+            }
+            if body is not None:
+                ev["body"] = json.dumps(body)
+            return ev
+
+        with patch.dict(
+            os.environ,
+            {
+                "FOUNDER_NATIVE_SUB": FOUNDER_NATIVE_SUB,
+                "FOUNDER_NATIVE_EMAIL": founder_gmail,
+            },
+        ):
+            self.assertEqual(app.get_external_user_id(_req("GET", "/billing/status")), f"hayder:{FOUNDER_NATIVE_SUB}")
+            self.assertEqual(app.get_authenticated_user(_req("POST", "/chat")), founder_gmail)
+            self.assertEqual(
+                app.google_user_secret_name(app.get_authenticated_user(_req("POST", "/chat"))),
+                app.google_user_secret_name(founder_gmail),
+            )
+
+            with patch.object(app, "check_hayder_pro", return_value=True) as mock_pro:
+                st_res = app.lambda_handler(_req("GET", "/billing/status"), None)
+            self.assertEqual(st_res["statusCode"], 200)
+            self.assertTrue(json.loads(st_res["body"])["entitled"])
+            mock_pro.assert_called_once_with(f"hayder:{FOUNDER_NATIVE_SUB}", client=None)
+
+            with patch.object(app, "check_hayder_pro", return_value=True) as mock_pro2, \
+                 patch.object(app, "chat", return_value=app.response(200, {"reply": "ok"})) as mock_chat:
+                chat_ev = _req("POST", "/chat", {"message": "status"})
+                chat_res = app.lambda_handler(chat_ev, None)
+            self.assertEqual(chat_res["statusCode"], 200)
+            mock_pro2.assert_called_once_with(f"hayder:{FOUNDER_NATIVE_SUB}")
+            mock_chat.assert_called_once_with(founder_gmail, {"message": "status"}, event=chat_ev)
+
     def test_cross_email_founder_linking_fails_closed_by_default_preventing_silent_overwrite(self):
         """
         Cross-email founder linking MUST fail closed unless explicitly opted in,
